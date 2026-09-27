@@ -104,43 +104,43 @@ fun BatchRenameScreen() {
             modifier = Modifier
                 .fillMaxWidth()
                 .background(HeaderGradient)
-                .padding(horizontal = 20.dp, vertical = 22.dp)
+                .padding(horizontal = 16.dp, vertical = 10.dp)
         ) {
-            Column {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Box(
-                        modifier = Modifier
-                            .size(40.dp)
-                            .clip(CircleShape)
-                            .background(Color.White.copy(alpha = 0.18f)),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(
-                            Icons.Filled.AutoAwesome,
-                            contentDescription = null,
-                            tint = Color.White,
-                            modifier = Modifier.size(22.dp)
-                        )
-                    }
-                    Spacer(modifier = Modifier.width(10.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    modifier = Modifier
+                        .size(30.dp)
+                        .clip(CircleShape)
+                        .background(Color.White.copy(alpha = 0.18f)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        Icons.Filled.AutoAwesome,
+                        contentDescription = null,
+                        tint = Color.White,
+                        modifier = Modifier.size(16.dp)
+                    )
+                }
+                Spacer(modifier = Modifier.width(8.dp))
+                Column {
                     Text(
-                        "החלף בקליק",
+                        "שינוי שמות קבצים",
                         color = Color.White,
-                        fontSize = 20.sp,
+                        fontSize = 15.sp,
                         fontWeight = FontWeight.ExtraBold,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
+                    if (items.isNotEmpty()) {
+                        Text(
+                            "נמצאו ${items.size} קבצים",
+                            color = Color.White.copy(alpha = 0.85f),
+                            fontSize = 11.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
                 }
-                Spacer(modifier = Modifier.height(4.dp))
-                Text(
-                    if (items.isNotEmpty()) "נמצאו ${items.size} קבצים להחלפה"
-                    else "שינוי שמות קבצים בכמות גדולה",
-                    color = Color.White.copy(alpha = 0.85f),
-                    fontSize = 13.sp,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
             }
         }
 
@@ -149,7 +149,7 @@ fun BatchRenameScreen() {
                 .weight(1f)
                 .padding(horizontal = 14.dp)
         ) {
-            Spacer(modifier = Modifier.height(14.dp))
+            Spacer(modifier = Modifier.height(8.dp))
 
             // ---------- כפתור בחירת תיקייה ----------
             Surface(
@@ -160,12 +160,12 @@ fun BatchRenameScreen() {
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Row(
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Box(
                         modifier = Modifier
-                            .size(36.dp)
+                            .size(30.dp)
                             .clip(RoundedCornerShape(10.dp))
                             .background(NewChipBg),
                         contentAlignment = Alignment.Center
@@ -177,13 +177,13 @@ fun BatchRenameScreen() {
                         Text(
                             if (hasFolder) "החלף תיקייה" else "בחר תיקייה",
                             fontWeight = FontWeight.Bold,
-                            fontSize = 15.sp,
+                            fontSize = 13.sp,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
                         Text(
                             "לחץ כדי לסרוק קבצים",
-                            fontSize = 12.sp,
+                            fontSize = 10.sp,
                             color = MutedText,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
@@ -203,7 +203,7 @@ fun BatchRenameScreen() {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(top = 14.dp, bottom = 6.dp),
+                        .padding(top = 8.dp, bottom = 4.dp),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
@@ -216,7 +216,7 @@ fun BatchRenameScreen() {
                         color = if (allSelected) OldChipBg else NewChipBg
                     ) {
                         Row(
-                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Icon(
@@ -271,7 +271,7 @@ fun BatchRenameScreen() {
             } else {
                 LazyColumn(
                     modifier = Modifier.weight(1f),
-                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
                     contentPadding = PaddingValues(bottom = 18.dp)
                 ) {
                     items(items) { item ->
@@ -284,7 +284,7 @@ fun BatchRenameScreen() {
         // ---------- כפתור אשר ורץ ----------
         AnimatedVisibility(visible = items.isNotEmpty()) {
             Surface(shadowElevation = 12.dp, color = CardBg) {
-                Box(modifier = Modifier.padding(14.dp)) {
+                Box(modifier = Modifier.padding(10.dp)) {
                     Surface(
                         onClick = {
                             var success = 0
@@ -307,7 +307,7 @@ fun BatchRenameScreen() {
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(vertical = 14.dp),
+                                .padding(vertical = 10.dp),
                             horizontalArrangement = Arrangement.Center,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
@@ -338,7 +338,7 @@ fun FileRenameCard(item: RenameItem) {
             .animateContentSize()
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 12.dp),
+              modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Checkbox(
@@ -346,10 +346,10 @@ fun FileRenameCard(item: RenameItem) {
                 onCheckedChange = { item.checked.value = it },
                 colors = CheckboxDefaults.colors(checkedColor = Primary)
             )
-            Spacer(modifier = Modifier.width(6.dp))
+            Spacer(modifier = Modifier.width(4.dp))
             Column(modifier = Modifier.weight(1f)) {
                 NameRow(label = "לפני", name = item.oldName, isNew = false)
-                Spacer(modifier = Modifier.height(6.dp))
+                Spacer(modifier = Modifier.height(3.dp))
                 NameRow(label = "אחרי", name = item.newName, isNew = true)
             }
         }
