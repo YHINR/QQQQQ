@@ -7,9 +7,12 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateContentSize
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -17,11 +20,14 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.documentfile.provider.DocumentFile
 
 data class RenameItem(
@@ -31,20 +37,30 @@ data class RenameItem(
     val checked: MutableState<Boolean>
 )
 
-private val AppPrimary = Color(0xFF4F46E5)
-private val AppSurfaceVariant = Color(0xFFF3F2FA)
+// ---------- פלטת צבעים מודרנית ----------
+private val Primary = Color(0xFF6C5CE7)
+private val PrimaryDark = Color(0xFF5646C7)
+private val Accent = Color(0xFF00CEC9)
+private val BgLight = Color(0xFFF7F7FC)
+private val CardBg = Color(0xFFFFFFFF)
+private val MutedText = Color(0xFF8A8A9E)
+private val OldChipBg = Color(0xFFF1F1F7)
+private val NewChipBg = Color(0xFFEDE9FE)
+
+private val HeaderGradient = Brush.horizontalGradient(listOf(Primary, PrimaryDark))
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
             val colorScheme = lightColorScheme(
-                primary = AppPrimary,
-                secondary = AppPrimary,
-                surfaceVariant = AppSurfaceVariant
+                primary = Primary,
+                secondary = Accent,
+                background = BgLight,
+                surface = CardBg
             )
             MaterialTheme(colorScheme = colorScheme) {
-                Surface(modifier = Modifier.fillMaxSize()) {
+                Surface(modifier = Modifier.fillMaxSize(), color = BgLight) {
                     BatchRenameScreen()
                 }
             }
@@ -52,16 +68,16 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun BatchRenameScreen() {
     val context = LocalContext.current
     var items by remember { mutableStateOf(listOf<RenameItem>()) }
     var folderUri by remember { mutableStateOf<Uri?>(null) }
-    var statusText by remember { mutableStateOf("בחר תיקייה כדי להתחיל") }
-    var isRunning by remember { mutableStateOf(false) }
+    var statusText by remember { mutableStateOf("") }
+    var hasFolder by remember { mutableStateOf(false) }
 
     val checkedCount = items.count { it.checked.value }
+    val allSelected = items.isNotEmpty() && checkedCount == items.size
 
     val folderPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocumentTree()
@@ -73,180 +89,297 @@ fun BatchRenameScreen() {
                     android.content.Intent.FLAG_GRANT_WRITE_URI_PERMISSION
             )
             folderUri = uri
+            hasFolder = true
             items = scanFolder(context, uri)
-            statusText = if (items.isEmpty())
-                "לא נמצאו קבצים בתבנית המתאימה"
-            else
-                "נמצאו ${items.size} קבצים התואמים לתבנית"
+            statusText = if (items.isEmpty()) "לא נמצאו קבצים בתבנית המתאימה" else ""
         }
     }
 
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Filled.DriveFileRenameOutline, contentDescription = null)
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("Batch Rename", fontWeight = FontWeight.Bold)
+    Column(modifier = Modifier.fillMaxSize()) {
+
+        // ---------- כותרת עם גרדיאנט ----------
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(HeaderGradient)
+                .padding(horizontal = 20.dp, vertical = 22.dp)
+        ) {
+            Column {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(
+                        modifier = Modifier
+                            .size(40.dp)
+                            .clip(CircleShape)
+                            .background(Color.White.copy(alpha = 0.18f)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            Icons.Filled.AutoAwesome,
+                            contentDescription = null,
+                            tint = Color.White,
+                            modifier = Modifier.size(22.dp)
+                        )
                     }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = AppPrimary,
-                    titleContentColor = Color.White,
-                    navigationIconContentColor = Color.White
-                )
-            )
-        },
-        bottomBar = {
-            if (items.isNotEmpty()) {
-                Surface(shadowElevation = 8.dp) {
-                    Column(modifier = Modifier.padding(16.dp)) {
-                        Button(
-                            onClick = {
-                                isRunning = true
-                                var success = 0
-                                var failed = 0
-                                items.filter { it.checked.value }.forEach { item ->
-                                    try {
-                                        if (item.documentFile.renameTo(item.newName)) success++ else failed++
-                                    } catch (e: Exception) {
-                                        failed++
-                                    }
-                                }
-                                statusText = "✅ הושלם: $success הצליחו, $failed נכשלו"
-                                folderUri?.let { items = scanFolder(context, it) }
-                                isRunning = false
-                            },
-                            enabled = checkedCount > 0 && !isRunning,
-                            shape = RoundedCornerShape(14.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = AppPrimary),
-                            modifier = Modifier.fillMaxWidth().height(52.dp)
-                        ) {
-                            Icon(Icons.Filled.PlayArrow, contentDescription = null)
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text("אשר ורץ ($checkedCount)", fontWeight = FontWeight.Bold)
-                        }
-                    }
+                    Spacer(modifier = Modifier.width(10.dp))
+                    Text(
+                        "Batch Rename",
+                        color = Color.White,
+                        fontSize = 20.sp,
+                        fontWeight = FontWeight.ExtraBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
                 }
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    if (items.isNotEmpty()) "נמצאו ${items.size} קבצים להחלפה"
+                    else "שינוי שמות קבצים בכמות גדולה",
+                    color = Color.White.copy(alpha = 0.85f),
+                    fontSize = 13.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
             }
         }
-    ) { padding ->
+
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(padding)
-                .padding(horizontal = 16.dp)
+                .padding(horizontal = 14.dp)
         ) {
-            Spacer(modifier = Modifier.height(16.dp))
+            Spacer(modifier = Modifier.height(14.dp))
 
-            OutlinedButton(
+            // ---------- כפתור בחירת תיקייה ----------
+            Surface(
                 onClick = { folderPicker.launch(null) },
-                shape = RoundedCornerShape(14.dp),
-                modifier = Modifier.fillMaxWidth().height(52.dp)
+                shape = RoundedCornerShape(16.dp),
+                color = CardBg,
+                shadowElevation = 2.dp,
+                modifier = Modifier.fillMaxWidth()
             ) {
-                Icon(Icons.Filled.FolderOpen, contentDescription = null)
-                Spacer(modifier = Modifier.width(8.dp))
-                Text("בחר תיקייה", fontWeight = FontWeight.SemiBold)
+                Row(
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(36.dp)
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(NewChipBg),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(Icons.Filled.FolderOpen, contentDescription = null, tint = Primary)
+                    }
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            if (hasFolder) "החלף תיקייה" else "בחר תיקייה",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 15.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            "לחץ כדי לסרוק קבצים",
+                            fontSize = 12.sp,
+                            color = MutedText,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    Icon(Icons.Filled.ChevronRight, contentDescription = null, tint = MutedText)
+                }
             }
 
-            Spacer(modifier = Modifier.height(12.dp))
+            if (statusText.isNotEmpty()) {
+                Spacer(modifier = Modifier.height(10.dp))
+                Text(statusText, fontSize = 13.sp, color = MutedText)
+            }
 
-            Text(
-                text = statusText,
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-
+            // ---------- שורת בחר הכל + מונה ----------
             AnimatedVisibility(visible = items.isNotEmpty()) {
-                Column {
-                    Spacer(modifier = Modifier.height(12.dp))
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 14.dp, bottom = 6.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Surface(
+                        onClick = {
+                            val newValue = !allSelected
+                            items.forEach { it.checked.value = newValue }
+                        },
+                        shape = RoundedCornerShape(50),
+                        color = if (allSelected) OldChipBg else NewChipBg
                     ) {
-                        Row {
-                            TextButton(onClick = {
-                                items.forEach { it.checked.value = true }
-                            }) {
-                                Icon(Icons.Filled.CheckBox, contentDescription = null, modifier = Modifier.size(18.dp))
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text("בחר הכל")
-                            }
-                            TextButton(onClick = {
-                                items.forEach { it.checked.value = false }
-                            }) {
-                                Icon(Icons.Filled.CheckBoxOutlineBlank, contentDescription = null, modifier = Modifier.size(18.dp))
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text("בטל הכל")
-                            }
+                        Row(
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                if (allSelected) Icons.Filled.RemoveDone else Icons.Filled.DoneAll,
+                                contentDescription = null,
+                                tint = if (allSelected) MutedText else Primary,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                if (allSelected) "בטל הכל" else "בחר הכל",
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = if (allSelected) MutedText else Primary
+                            )
                         }
+                    }
+
+                    Surface(
+                        shape = RoundedCornerShape(50),
+                        color = Primary
+                    ) {
                         Text(
-                            "$checkedCount / ${items.size} נבחרו",
-                            style = MaterialTheme.typography.labelLarge,
-                            color = AppPrimary,
-                            fontWeight = FontWeight.Bold
+                            "$checkedCount / ${items.size}",
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White
                         )
                     }
                 }
             }
 
-            Spacer(modifier = Modifier.height(8.dp))
+            Spacer(modifier = Modifier.height(6.dp))
 
-            LazyColumn(
-                modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-                contentPadding = PaddingValues(bottom = 16.dp)
-            ) {
-                items(items) { item ->
-                    ElevatedCard(
-                        shape = RoundedCornerShape(14.dp),
-                        elevation = CardDefaults.elevatedCardElevation(defaultElevation = 2.dp),
+            // ---------- רשימת קבצים ----------
+            if (hasFolder && items.isEmpty()) {
+                Column(
+                    modifier = Modifier.fillMaxSize().weight(1f),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center
+                ) {
+                    Icon(
+                        Icons.Filled.SearchOff,
+                        contentDescription = null,
+                        tint = MutedText,
+                        modifier = Modifier.size(56.dp)
+                    )
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Text("לא נמצאו קבצים תואמים", color = MutedText, fontSize = 14.sp)
+                }
+            } else {
+                LazyColumn(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                    contentPadding = PaddingValues(bottom = 18.dp)
+                ) {
+                    items(items) { item ->
+                        FileRenameCard(item)
+                    }
+                }
+            }
+        }
+
+        // ---------- כפתור אשר ורץ ----------
+        AnimatedVisibility(visible = items.isNotEmpty()) {
+            Surface(shadowElevation = 12.dp, color = CardBg) {
+                Box(modifier = Modifier.padding(14.dp)) {
+                    Surface(
+                        onClick = {
+                            var success = 0
+                            var failed = 0
+                            items.filter { it.checked.value }.forEach { item ->
+                                try {
+                                    if (item.documentFile.renameTo(item.newName)) success++ else failed++
+                                } catch (e: Exception) {
+                                    failed++
+                                }
+                            }
+                            statusText = "✅ הושלם: $success הצליחו" + if (failed > 0) ", $failed נכשלו" else ""
+                            folderUri?.let { items = scanFolder(context, it) }
+                        },
+                        enabled = checkedCount > 0,
+                        shape = RoundedCornerShape(16.dp),
+                        color = if (checkedCount > 0) Primary else MutedText.copy(alpha = 0.3f),
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(horizontal = 12.dp, vertical = 8.dp),
+                                .padding(vertical = 14.dp),
+                            horizontalArrangement = Arrangement.Center,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Checkbox(
-                                checked = item.checked.value,
-                                onCheckedChange = { item.checked.value = it },
-                                colors = CheckboxDefaults.colors(checkedColor = AppPrimary)
+                            Icon(Icons.Filled.PlayArrow, contentDescription = null, tint = Color.White)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                "אשר ורץ ($checkedCount)",
+                                color = Color.White,
+                                fontWeight = FontWeight.ExtraBold,
+                                fontSize = 15.sp
                             )
-                            Column(modifier = Modifier.padding(start = 4.dp).weight(1f)) {
-                                Text(
-                                    item.oldName,
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                                Spacer(modifier = Modifier.height(2.dp))
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Icon(
-                                        Icons.Filled.ArrowForward,
-                                        contentDescription = null,
-                                        modifier = Modifier.size(14.dp),
-                                        tint = AppPrimary
-                                    )
-                                    Spacer(modifier = Modifier.width(4.dp))
-                                    Text(
-                                        item.newName,
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = AppPrimary,
-                                        fontWeight = FontWeight.Medium,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
-                                }
-                            }
                         }
                     }
                 }
             }
         }
+    }
+}
+
+@Composable
+fun FileRenameCard(item: RenameItem) {
+    Surface(
+        shape = RoundedCornerShape(16.dp),
+        color = CardBg,
+        shadowElevation = 1.dp,
+        modifier = Modifier
+            .fillMaxWidth()
+            .animateContentSize()
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Checkbox(
+                checked = item.checked.value,
+                onCheckedChange = { item.checked.value = it },
+                colors = CheckboxDefaults.colors(checkedColor = Primary)
+            )
+            Spacer(modifier = Modifier.width(6.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                NameRow(label = "לפני", name = item.oldName, isNew = false)
+                Spacer(modifier = Modifier.height(6.dp))
+                NameRow(label = "אחרי", name = item.newName, isNew = true)
+            }
+        }
+    }
+}
+
+@Composable
+fun NameRow(label: String, name: String, isNew: Boolean) {
+    Row(verticalAlignment = Alignment.Top) {
+        Surface(
+            shape = RoundedCornerShape(6.dp),
+            color = if (isNew) NewChipBg else OldChipBg,
+            modifier = Modifier.padding(top = 1.dp)
+        ) {
+            Text(
+                label,
+                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                fontSize = 10.sp,
+                fontWeight = FontWeight.Bold,
+                color = if (isNew) Primary else MutedText
+            )
+        }
+        Spacer(modifier = Modifier.width(8.dp))
+        Text(
+            name,
+            fontSize = 14.sp,
+            fontWeight = if (isNew) FontWeight.Bold else FontWeight.Normal,
+            color = if (isNew) Primary else MutedText,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f)
+        )
     }
 }
 
