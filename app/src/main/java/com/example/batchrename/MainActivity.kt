@@ -1,5 +1,6 @@
 package com.example.batchrename
 
+import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -51,6 +52,7 @@ private val HeaderGradient = Brush.horizontalGradient(listOf(Primary, PrimaryDar
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
+        installSplashScreen()
         super.onCreate(savedInstanceState)
         setContent {
             val colorScheme = lightColorScheme(
