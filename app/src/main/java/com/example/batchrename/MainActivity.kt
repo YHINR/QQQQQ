@@ -226,7 +226,7 @@ fun BatchRenameScreen() {
                                 Spacer(modifier = Modifier.height(2.dp))
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     Icon(
-                                        Icons.AutoMirrored.Filled.ArrowForward,
+                                        Icons.Filled.ArrowForward,
                                         contentDescription = null,
                                         modifier = Modifier.size(14.dp),
                                         tint = AppPrimary
