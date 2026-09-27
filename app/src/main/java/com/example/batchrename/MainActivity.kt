@@ -144,7 +144,7 @@ fun BatchRenameScreen() {
 
         Column(
             modifier = Modifier
-                .fillMaxSize()
+                .weight(1f)
                 .padding(horizontal = 14.dp)
         ) {
             Spacer(modifier = Modifier.height(14.dp))
