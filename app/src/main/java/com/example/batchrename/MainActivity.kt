@@ -122,7 +122,7 @@ fun BatchRenameScreen() {
                     }
                     Spacer(modifier = Modifier.width(10.dp))
                     Text(
-                        "Batch Rename",
+                        "החלף בקליק",
                         color = Color.White,
                         fontSize = 20.sp,
                         fontWeight = FontWeight.ExtraBold,
