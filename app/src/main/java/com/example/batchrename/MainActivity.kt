@@ -1,6 +1,6 @@
 package com.example.batchrename
 
-import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
+import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -9,6 +9,11 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -24,21 +29,23 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.documentfile.provider.DocumentFile
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
-data class RenameItem(
-    val documentFile: DocumentFile,
-    val oldName: String,
-    val newName: String,
-    val checked: MutableState<Boolean>
-)
-
-// ---------- פלטת צבעים מודרנית ----------
+// ---------- פלטת צבעים ----------
 private val Primary = Color(0xFF6C5CE7)
 private val PrimaryDark = Color(0xFF5646C7)
 private val Accent = Color(0xFF00CEC9)
@@ -47,8 +54,28 @@ private val CardBg = Color(0xFFFFFFFF)
 private val MutedText = Color(0xFF8A8A9E)
 private val OldChipBg = Color(0xFFF1F1F7)
 private val NewChipBg = Color(0xFFEDE9FE)
-
 private val HeaderGradient = Brush.horizontalGradient(listOf(Primary, PrimaryDark))
+
+private val AUDIO_EXTENSIONS = setOf("mp3", "m4a", "aac", "wav", "flac", "ogg", "wma", "opus")
+private const val SINGLES_WORD = "סינגלים"
+
+enum class AppMode { RENAME, SORT }
+
+data class RenameItem(
+    val documentFile: DocumentFile,
+    val oldName: String,
+    val newName: String,
+    val checked: MutableState<Boolean>
+)
+
+data class SortItem(
+    val documentFile: DocumentFile,
+    val fileName: String,
+    val artist: String,
+    val letter: String,
+    val destDisplay: String,
+    val checked: MutableState<Boolean>
+)
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -62,8 +89,10 @@ class MainActivity : ComponentActivity() {
                 surface = CardBg
             )
             MaterialTheme(colorScheme = colorScheme) {
-                Surface(modifier = Modifier.fillMaxSize(), color = BgLight) {
-                    BatchRenameScreen()
+                CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
+                    Surface(modifier = Modifier.fillMaxSize(), color = BgLight) {
+                        BatchRenameScreen()
+                    }
                 }
             }
         }
@@ -73,15 +102,27 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun BatchRenameScreen() {
     val context = LocalContext.current
-    var items by remember { mutableStateOf(listOf<RenameItem>()) }
-    var folderUri by remember { mutableStateOf<Uri?>(null) }
-    var statusText by remember { mutableStateOf("") }
-    var hasFolder by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
 
-    val checkedCount = items.count { it.checked.value }
-    val allSelected = items.isNotEmpty() && checkedCount == items.size
+    var mode by remember { mutableStateOf(AppMode.RENAME) }
 
-    val folderPicker = rememberLauncherForActivityResult(
+    // ---- מצב שינוי שמות ----
+    var renameItems by remember { mutableStateOf(listOf<RenameItem>()) }
+    var renameFolderUri by remember { mutableStateOf<Uri?>(null) }
+    var hasRenameFolder by remember { mutableStateOf(false) }
+    var isScanningRename by remember { mutableStateOf(false) }
+    var renameStatusText by remember { mutableStateOf("") }
+
+    // ---- מצב מיון סינגלים ----
+    var sortRootUri by remember { mutableStateOf<Uri?>(null) }
+    var sortFolderUri by remember { mutableStateOf<Uri?>(null) }
+    var hasSortRoot by remember { mutableStateOf(false) }
+    var hasSortFolder by remember { mutableStateOf(false) }
+    var sortItems by remember { mutableStateOf(listOf<SortItem>()) }
+    var isScanningSort by remember { mutableStateOf(false) }
+    var sortStatusText by remember { mutableStateOf("") }
+
+    val renameFolderPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocumentTree()
     ) { uri: Uri? ->
         if (uri != null) {
@@ -90,58 +131,161 @@ fun BatchRenameScreen() {
                 android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION or
                     android.content.Intent.FLAG_GRANT_WRITE_URI_PERMISSION
             )
-            folderUri = uri
-            hasFolder = true
-            items = scanFolder(context, uri)
-            statusText = if (items.isEmpty()) "לא נמצאו קבצים בתבנית המתאימה" else ""
+            renameFolderUri = uri
+            hasRenameFolder = true
+            renameStatusText = ""
+            scope.launch {
+                isScanningRename = true
+                val result = withContext(Dispatchers.IO) { scanRenameFolder(context, uri) }
+                renameItems = result
+                isScanningRename = false
+                if (result.isEmpty()) renameStatusText = "לא נמצאו קבצים בתבנית המתאימה"
+            }
         }
     }
 
+    val sortRootPicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocumentTree()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            context.contentResolver.takePersistableUriPermission(
+                uri,
+                android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                    android.content.Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+            )
+            sortRootUri = uri
+            hasSortRoot = true
+        }
+    }
+
+    val sortFolderPicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocumentTree()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            context.contentResolver.takePersistableUriPermission(
+                uri,
+                android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                    android.content.Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+            )
+            sortFolderUri = uri
+            hasSortFolder = true
+            sortStatusText = ""
+            scope.launch {
+                isScanningSort = true
+                val result = withContext(Dispatchers.IO) { scanSortFolder(context, uri) }
+                sortItems = result
+                isScanningSort = false
+                if (result.isEmpty()) sortStatusText = "לא נמצאו שירים עם התגית \"$SINGLES_WORD\""
+            }
+        }
+    }
+
+    val renameCheckedCount = renameItems.count { it.checked.value }
+    val renameAllSelected = renameItems.isNotEmpty() && renameCheckedCount == renameItems.size
+
+    val sortCheckedCount = sortItems.count { it.checked.value }
+    val sortAllSelected = sortItems.isNotEmpty() && sortCheckedCount == sortItems.size
+
     Column(modifier = Modifier.fillMaxSize()) {
 
-        // ---------- כותרת עם גרדיאנט ----------
+        // ---------- כותרת + כפתורי תיקייה ----------
         Box(
             modifier = Modifier
                 .fillMaxWidth()
                 .background(HeaderGradient)
                 .padding(horizontal = 16.dp, vertical = 10.dp)
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(
-                    modifier = Modifier
-                        .size(30.dp)
-                        .clip(CircleShape)
-                        .background(Color.White.copy(alpha = 0.18f)),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        Icons.Filled.AutoAwesome,
-                        contentDescription = null,
-                        tint = Color.White,
-                        modifier = Modifier.size(16.dp)
-                    )
-                }
-                Spacer(modifier = Modifier.width(8.dp))
-                Column {
-                    Text(
-                        "שינוי שמות קבצים",
-                        color = Color.White,
-                        fontSize = 15.sp,
-                        fontWeight = FontWeight.ExtraBold,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    if (items.isNotEmpty()) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                    Box(
+                        modifier = Modifier
+                            .size(30.dp)
+                            .clip(CircleShape)
+                            .background(Color.White.copy(alpha = 0.18f)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            Icons.Filled.AutoAwesome,
+                            contentDescription = null,
+                            tint = Color.White,
+                            modifier = Modifier.size(16.dp)
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Column {
                         Text(
-                            "נמצאו ${items.size} קבצים",
-                            color = Color.White.copy(alpha = 0.85f),
-                            fontSize = 11.sp,
+                            if (mode == AppMode.RENAME) "שינוי שמות קבצים" else "מיון סינגלים",
+                            color = Color.White,
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.ExtraBold,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
+                        val subtitle = when (mode) {
+                            AppMode.RENAME -> if (renameItems.isNotEmpty()) "נמצאו ${renameItems.size} קבצים" else null
+                            AppMode.SORT -> if (sortItems.isNotEmpty()) "נמצאו ${sortItems.size} שירים" else null
+                        }
+                        if (subtitle != null) {
+                            Text(
+                                subtitle,
+                                color = Color.White.copy(alpha = 0.85f),
+                                fontSize = 11.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                }
+
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (mode == AppMode.RENAME) {
+                        IconButton(onClick = { renameFolderPicker.launch(null) }) {
+                            Icon(Icons.Filled.FolderOpen, contentDescription = "בחר תיקייה", tint = Color.White)
+                        }
+                    } else {
+                        IconButton(onClick = { sortRootPicker.launch(null) }) {
+                            Icon(
+                                Icons.Filled.AccountTree,
+                                contentDescription = "בחר תיקיית אב",
+                                tint = if (hasSortRoot) Color.White else Color.White.copy(alpha = 0.55f)
+                            )
+                        }
+                        IconButton(onClick = { sortFolderPicker.launch(null) }) {
+                            Icon(
+                                Icons.Filled.FolderOpen,
+                                contentDescription = "בחר תיקיית מיון",
+                                tint = if (hasSortFolder) Color.White else Color.White.copy(alpha = 0.55f)
+                            )
+                        }
                     }
                 }
             }
+        }
+
+        // ---------- מתג מצב ----------
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            ModeChip(
+                label = "שינוי שמות",
+                icon = Icons.Filled.DriveFileRenameOutline,
+                selected = mode == AppMode.RENAME,
+                modifier = Modifier.weight(1f)
+            ) { mode = AppMode.RENAME }
+
+            ModeChip(
+                label = "מיון סינגלים",
+                icon = Icons.Filled.LibraryMusic,
+                selected = mode == AppMode.SORT,
+                modifier = Modifier.weight(1f)
+            ) { mode = AppMode.SORT }
         }
 
         Column(
@@ -149,181 +293,261 @@ fun BatchRenameScreen() {
                 .weight(1f)
                 .padding(horizontal = 14.dp)
         ) {
-            Spacer(modifier = Modifier.height(8.dp))
+            if (mode == AppMode.RENAME) {
 
-            // ---------- כפתור בחירת תיקייה ----------
-            Surface(
-                onClick = { folderPicker.launch(null) },
-                shape = RoundedCornerShape(16.dp),
-                color = CardBg,
-                shadowElevation = 2.dp,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .size(30.dp)
-                            .clip(RoundedCornerShape(10.dp))
-                            .background(NewChipBg),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(Icons.Filled.FolderOpen, contentDescription = null, tint = Primary)
-                    }
-                    Spacer(modifier = Modifier.width(12.dp))
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            if (hasFolder) "החלף תיקייה" else "בחר תיקייה",
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 13.sp,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        Text(
-                            "לחץ כדי לסרוק קבצים",
-                            fontSize = 10.sp,
-                            color = MutedText,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
-                    Icon(Icons.Filled.ChevronRight, contentDescription = null, tint = MutedText)
+                if (renameStatusText.isNotEmpty()) {
+                    Text(renameStatusText, fontSize = 13.sp, color = MutedText, modifier = Modifier.padding(bottom = 6.dp))
                 }
-            }
 
-            if (statusText.isNotEmpty()) {
-                Spacer(modifier = Modifier.height(10.dp))
-                Text(statusText, fontSize = 13.sp, color = MutedText)
-            }
-
-            // ---------- שורת בחר הכל + מונה ----------
-            AnimatedVisibility(visible = items.isNotEmpty()) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 8.dp, bottom = 4.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Surface(
-                        onClick = {
-                            val newValue = !allSelected
-                            items.forEach { it.checked.value = newValue }
-                        },
-                        shape = RoundedCornerShape(50),
-                        color = if (allSelected) OldChipBg else NewChipBg
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Icon(
-                                if (allSelected) Icons.Filled.RemoveDone else Icons.Filled.DoneAll,
-                                contentDescription = null,
-                                tint = if (allSelected) MutedText else Primary,
-                                modifier = Modifier.size(16.dp)
-                            )
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text(
-                                if (allSelected) "בטל הכל" else "בחר הכל",
-                                fontSize = 13.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = if (allSelected) MutedText else Primary
-                            )
+                AnimatedVisibility(visible = renameItems.isNotEmpty()) {
+                    SelectAllRow(
+                        checkedCount = renameCheckedCount,
+                        total = renameItems.size,
+                        allSelected = renameAllSelected,
+                        onToggle = {
+                            val newValue = !renameAllSelected
+                            renameItems.forEach { it.checked.value = newValue }
                         }
-                    }
-
-                    Surface(
-                        shape = RoundedCornerShape(50),
-                        color = Primary
-                    ) {
-                        Text(
-                            "$checkedCount / ${items.size}",
-                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = Color.White
-                        )
-                    }
-                }
-            }
-
-            Spacer(modifier = Modifier.height(6.dp))
-
-            // ---------- רשימת קבצים ----------
-            if (hasFolder && items.isEmpty()) {
-                Column(
-                    modifier = Modifier.fillMaxSize().weight(1f),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.Center
-                ) {
-                    Icon(
-                        Icons.Filled.SearchOff,
-                        contentDescription = null,
-                        tint = MutedText,
-                        modifier = Modifier.size(56.dp)
                     )
-                    Spacer(modifier = Modifier.height(10.dp))
-                    Text("לא נמצאו קבצים תואמים", color = MutedText, fontSize = 14.sp)
                 }
+
+                Spacer(modifier = Modifier.height(4.dp))
+
+                when {
+                    isScanningRename -> ScanningAnimation("סורק קבצים בתיקייה...")
+                    !hasRenameFolder -> EmptyState(Icons.Filled.FolderOpen, "בחר תיקייה מהסרגל העליון כדי להתחיל")
+                    renameItems.isEmpty() -> EmptyState(Icons.Filled.SearchOff, "לא נמצאו קבצים תואמים")
+                    else -> LazyColumn(
+                        modifier = Modifier.weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                        contentPadding = PaddingValues(bottom = 18.dp)
+                    ) {
+                        items(renameItems) { item -> FileRenameCard(item) }
+                    }
+                }
+
             } else {
-                LazyColumn(
-                    modifier = Modifier.weight(1f),
-                    verticalArrangement = Arrangement.spacedBy(6.dp),
-                    contentPadding = PaddingValues(bottom = 18.dp)
-                ) {
-                    items(items) { item ->
-                        FileRenameCard(item)
+
+                if (sortStatusText.isNotEmpty()) {
+                    Text(sortStatusText, fontSize = 13.sp, color = MutedText, modifier = Modifier.padding(bottom = 6.dp))
+                }
+
+                AnimatedVisibility(visible = sortItems.isNotEmpty()) {
+                    SelectAllRow(
+                        checkedCount = sortCheckedCount,
+                        total = sortItems.size,
+                        allSelected = sortAllSelected,
+                        onToggle = {
+                            val newValue = !sortAllSelected
+                            sortItems.forEach { it.checked.value = newValue }
+                        }
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(4.dp))
+
+                when {
+                    isScanningSort -> ScanningAnimation("סורק שירים ובודק תגיות...")
+                    !hasSortFolder -> EmptyState(Icons.Filled.LibraryMusic, "בחר תיקיית אב ותיקיית מיון מהסרגל העליון")
+                    sortItems.isEmpty() -> EmptyState(Icons.Filled.SearchOff, "לא נמצאו שירים עם התגית \"$SINGLES_WORD\"")
+                    else -> LazyColumn(
+                        modifier = Modifier.weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                        contentPadding = PaddingValues(bottom = 18.dp)
+                    ) {
+                        items(sortItems) { item -> SortCard(item) }
                     }
                 }
             }
         }
 
-        // ---------- כפתור אשר ורץ ----------
-        AnimatedVisibility(visible = items.isNotEmpty()) {
+        // ---------- כפתור תחתון ----------
+        val showConfirm = if (mode == AppMode.RENAME) renameItems.isNotEmpty() else sortItems.isNotEmpty()
+        AnimatedVisibility(visible = showConfirm) {
             Surface(shadowElevation = 12.dp, color = CardBg) {
                 Box(modifier = Modifier.padding(10.dp)) {
-                    Surface(
-                        onClick = {
-                            var success = 0
-                            var failed = 0
-                            items.filter { it.checked.value }.forEach { item ->
-                                try {
-                                    if (item.documentFile.renameTo(item.newName)) success++ else failed++
-                                } catch (e: Exception) {
-                                    failed++
+                    if (mode == AppMode.RENAME) {
+                        ConfirmButton(
+                            label = "אשר ורץ ($renameCheckedCount)",
+                            enabled = renameCheckedCount > 0,
+                            onClick = {
+                                var success = 0
+                                var failed = 0
+                                renameItems.filter { it.checked.value }.forEach { item ->
+                                    try {
+                                        if (item.documentFile.renameTo(item.newName)) success++ else failed++
+                                    } catch (e: Exception) {
+                                        failed++
+                                    }
+                                }
+                                renameStatusText = "✅ הושלם: $success הצליחו" + if (failed > 0) ", $failed נכשלו" else ""
+                                renameFolderUri?.let { uri ->
+                                    scope.launch {
+                                        renameItems = withContext(Dispatchers.IO) { scanRenameFolder(context, uri) }
+                                    }
                                 }
                             }
-                            statusText = "✅ הושלם: $success הצליחו" + if (failed > 0) ", $failed נכשלו" else ""
-                            folderUri?.let { items = scanFolder(context, it) }
-                        },
-                        enabled = checkedCount > 0,
-                        shape = RoundedCornerShape(16.dp),
-                        color = if (checkedCount > 0) Primary else MutedText.copy(alpha = 0.3f),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(vertical = 10.dp),
-                            horizontalArrangement = Arrangement.Center,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Icon(Icons.Filled.PlayArrow, contentDescription = null, tint = Color.White)
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text(
-                                "אשר ורץ ($checkedCount)",
-                                color = Color.White,
-                                fontWeight = FontWeight.ExtraBold,
-                                fontSize = 15.sp
-                            )
-                        }
+                        )
+                    } else {
+                        ConfirmButton(
+                            label = "אשר והעבר ($sortCheckedCount)",
+                            enabled = sortCheckedCount > 0 && hasSortRoot,
+                            onClick = {
+                                val root = sortRootUri
+                                if (root == null) {
+                                    sortStatusText = "יש לבחור תיקיית אב לפני ההעברה"
+                                } else {
+                                    val toMove = sortItems.filter { it.checked.value }
+                                    scope.launch {
+                                        isScanningSort = true
+                                        val (success, failed) = withContext(Dispatchers.IO) {
+                                            performSort(context, root, toMove)
+                                        }
+                                        sortStatusText = "✅ הושלם: $success הועברו" + if (failed > 0) ", $failed נכשלו" else ""
+                                        val currentSortFolder = sortFolderUri
+                                        sortItems = if (currentSortFolder != null) {
+                                            withContext(Dispatchers.IO) { scanSortFolder(context, currentSortFolder) }
+                                        } else emptyList()
+                                        isScanningSort = false
+                                    }
+                                }
+                            }
+                        )
                     }
                 }
             }
         }
+    }
+}
+
+@Composable
+fun ModeChip(label: String, icon: ImageVector, selected: Boolean, modifier: Modifier = Modifier, onClick: () -> Unit) {
+    Surface(
+        onClick = onClick,
+        shape = RoundedCornerShape(50),
+        color = if (selected) Primary else CardBg,
+        shadowElevation = if (selected) 2.dp else 0.dp,
+        modifier = modifier
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.Center,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(icon, contentDescription = null, tint = if (selected) Color.White else MutedText, modifier = Modifier.size(16.dp))
+            Spacer(modifier = Modifier.width(6.dp))
+            Text(
+                label,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Bold,
+                color = if (selected) Color.White else MutedText,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+    }
+}
+
+@Composable
+fun SelectAllRow(checkedCount: Int, total: Int, allSelected: Boolean, onToggle: () -> Unit) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(top = 4.dp, bottom = 4.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Surface(
+            onClick = onToggle,
+            shape = RoundedCornerShape(50),
+            color = if (allSelected) OldChipBg else NewChipBg
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    if (allSelected) Icons.Filled.RemoveDone else Icons.Filled.DoneAll,
+                    contentDescription = null,
+                    tint = if (allSelected) MutedText else Primary,
+                    modifier = Modifier.size(16.dp)
+                )
+                Spacer(modifier = Modifier.width(6.dp))
+                Text(
+                    if (allSelected) "בטל הכל" else "בחר הכל",
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = if (allSelected) MutedText else Primary
+                )
+            }
+        }
+
+        Surface(shape = RoundedCornerShape(50), color = Primary) {
+            Text(
+                "$checkedCount / $total",
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp),
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Bold,
+                color = Color.White
+            )
+        }
+    }
+}
+
+@Composable
+fun ConfirmButton(label: String, enabled: Boolean, onClick: () -> Unit) {
+    Surface(
+        onClick = onClick,
+        enabled = enabled,
+        shape = RoundedCornerShape(16.dp),
+        color = if (enabled) Primary else MutedText.copy(alpha = 0.3f),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(vertical = 10.dp),
+            horizontalArrangement = Arrangement.Center,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(Icons.Filled.PlayArrow, contentDescription = null, tint = Color.White)
+            Spacer(modifier = Modifier.width(8.dp))
+            Text(label, color = Color.White, fontWeight = FontWeight.ExtraBold, fontSize = 15.sp)
+        }
+    }
+}
+
+@Composable
+fun EmptyState(icon: ImageVector, text: String) {
+    Column(
+        modifier = Modifier.fillMaxSize(),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        Icon(icon, contentDescription = null, tint = MutedText, modifier = Modifier.size(52.dp))
+        Spacer(modifier = Modifier.height(10.dp))
+        Text(text, color = MutedText, fontSize = 13.sp, textAlign = TextAlign.Center, modifier = Modifier.padding(horizontal = 24.dp))
+    }
+}
+
+@Composable
+fun ScanningAnimation(text: String) {
+    val infiniteTransition = rememberInfiniteTransition(label = "scan")
+    val rotation by infiniteTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = 360f,
+        animationSpec = infiniteRepeatable(animation = tween(1100, easing = LinearEasing)),
+        label = "rotation"
+    )
+    Column(
+        modifier = Modifier.fillMaxSize(),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        Icon(
+            Icons.Filled.Autorenew,
+            contentDescription = null,
+            tint = Primary,
+            modifier = Modifier.size(44.dp).graphicsLayer { rotationZ = rotation }
+        )
+        Spacer(modifier = Modifier.height(10.dp))
+        Text(text, color = MutedText, fontSize = 13.sp, fontWeight = FontWeight.Medium)
     }
 }
 
@@ -333,12 +557,10 @@ fun FileRenameCard(item: RenameItem) {
         shape = RoundedCornerShape(16.dp),
         color = CardBg,
         shadowElevation = 1.dp,
-        modifier = Modifier
-            .fillMaxWidth()
-            .animateContentSize()
+        modifier = Modifier.fillMaxWidth().animateContentSize()
     ) {
         Row(
-              modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Checkbox(
@@ -351,6 +573,33 @@ fun FileRenameCard(item: RenameItem) {
                 NameRow(label = "לפני", name = item.oldName, isNew = false)
                 Spacer(modifier = Modifier.height(3.dp))
                 NameRow(label = "אחרי", name = item.newName, isNew = true)
+            }
+        }
+    }
+}
+
+@Composable
+fun SortCard(item: SortItem) {
+    Surface(
+        shape = RoundedCornerShape(16.dp),
+        color = CardBg,
+        shadowElevation = 1.dp,
+        modifier = Modifier.fillMaxWidth().animateContentSize()
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Checkbox(
+                checked = item.checked.value,
+                onCheckedChange = { item.checked.value = it },
+                colors = CheckboxDefaults.colors(checkedColor = Primary)
+            )
+            Spacer(modifier = Modifier.width(4.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                NameRow(label = "קובץ", name = item.fileName, isNew = false)
+                Spacer(modifier = Modifier.height(3.dp))
+                NameRow(label = "יעד", name = item.destDisplay, isNew = true)
             }
         }
     }
@@ -385,7 +634,9 @@ fun NameRow(label: String, name: String, isNew: Boolean) {
     }
 }
 
-fun scanFolder(context: android.content.Context, uri: Uri): List<RenameItem> {
+// ==================== לוגיקת שינוי שמות ====================
+
+fun scanRenameFolder(context: android.content.Context, uri: Uri): List<RenameItem> {
     val tree = DocumentFile.fromTreeUri(context, uri) ?: return emptyList()
     val result = mutableListOf<RenameItem>()
 
@@ -405,13 +656,129 @@ fun scanFolder(context: android.content.Context, uri: Uri): List<RenameItem> {
                     val newName = "$part2 - $part1$extension"
 
                     if (newName != name) {
-                        result.add(
-                            RenameItem(file, name, newName, mutableStateOf(true))
-                        )
+                        result.add(RenameItem(file, name, newName, mutableStateOf(true)))
                     }
                 }
             }
         }
     }
     return result
+}
+
+// ==================== לוגיקת מיון סינגלים ====================
+
+private fun isAudioFile(name: String?): Boolean {
+    if (name == null) return false
+    val ext = name.substringAfterLast('.', "").lowercase()
+    return ext in AUDIO_EXTENSIONS
+}
+
+private fun collectAudioFiles(dir: DocumentFile, acc: MutableList<DocumentFile>) {
+    dir.listFiles().forEach { f ->
+        if (f.isDirectory) {
+            collectAudioFiles(f, acc)
+        } else if (f.isFile && isAudioFile(f.name)) {
+            acc.add(f)
+        }
+    }
+}
+
+private fun extractArtistFromTags(context: android.content.Context, uri: Uri): String? {
+    val retriever = MediaMetadataRetriever()
+    return try {
+        retriever.setDataSource(context, uri)
+        val candidates = listOf(
+            retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ALBUM),
+            retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ALBUMARTIST),
+            retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ARTIST),
+            retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_GENRE),
+            retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_TITLE),
+            retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_WRITER),
+            retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_COMPOSER)
+        )
+        val tag = candidates.firstOrNull { it != null && it.contains(SINGLES_WORD) }
+        tag?.replace(SINGLES_WORD, "")
+            ?.trim()
+            ?.trim('-', '–', '—', ',')
+            ?.trim()
+            ?.takeIf { it.isNotBlank() }
+    } catch (e: Exception) {
+        null
+    } finally {
+        try {
+            retriever.release()
+        } catch (e: Exception) {
+        }
+    }
+}
+
+fun scanSortFolder(context: android.content.Context, uri: Uri): List<SortItem> {
+    val root = DocumentFile.fromTreeUri(context, uri) ?: return emptyList()
+    val audioFiles = mutableListOf<DocumentFile>()
+    collectAudioFiles(root, audioFiles)
+
+    val result = mutableListOf<SortItem>()
+    audioFiles.forEach { file ->
+        val name = file.name ?: return@forEach
+        val artist = extractArtistFromTags(context, file.uri) ?: return@forEach
+        val letter = artist.trim().firstOrNull()?.toString() ?: return@forEach
+        val destDisplay = "$letter / $artist / $SINGLES_WORD / $name"
+        result.add(SortItem(file, name, artist, letter, destDisplay, mutableStateOf(true)))
+    }
+    return result
+}
+
+private fun guessAudioMime(name: String): String {
+    val ext = name.substringAfterLast('.', "").lowercase()
+    return when (ext) {
+        "mp3" -> "audio/mpeg"
+        "m4a" -> "audio/mp4"
+        "aac" -> "audio/aac"
+        "wav" -> "audio/wav"
+        "flac" -> "audio/flac"
+        "ogg" -> "audio/ogg"
+        "wma" -> "audio/x-ms-wma"
+        "opus" -> "audio/opus"
+        else -> "audio/*"
+    }
+}
+
+fun performSort(context: android.content.Context, rootUri: Uri, items: List<SortItem>): Pair<Int, Int> {
+    val rootTree = DocumentFile.fromTreeUri(context, rootUri) ?: return 0 to items.size
+    var success = 0
+    var failed = 0
+
+    items.forEach { item ->
+        try {
+            val letterDir = rootTree.findFile(item.letter) ?: rootTree.createDirectory(item.letter)
+            val artistDir = letterDir?.findFile(item.artist) ?: letterDir?.createDirectory(item.artist)
+            val singlesDir = artistDir?.findFile(SINGLES_WORD) ?: artistDir?.createDirectory(SINGLES_WORD)
+
+            if (singlesDir == null) {
+                failed++
+                return@forEach
+            }
+
+            val mime = guessAudioMime(item.fileName)
+            val newFile = singlesDir.findFile(item.fileName) ?: singlesDir.createFile(mime, item.fileName)
+
+            if (newFile == null) {
+                failed++
+                return@forEach
+            }
+
+            context.contentResolver.openInputStream(item.documentFile.uri)?.use { input ->
+                context.contentResolver.openOutputStream(newFile.uri)?.use { output ->
+                    input.copyTo(output)
+                }
+            }
+
+            item.documentFile.delete()
+            success++
+        } catch (e: Exception) {
+            failed++
+        }
+    }
+
+    return success to failed
 }
