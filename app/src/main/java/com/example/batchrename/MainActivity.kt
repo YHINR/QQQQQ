@@ -15,6 +15,8 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -45,6 +47,7 @@ import androidx.compose.ui.unit.sp
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.documentfile.provider.DocumentFile
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -52,7 +55,7 @@ import kotlinx.coroutines.withContext
 private val Primary = Color(0xFF6C5CE7)
 private val PrimaryDark = Color(0xFF5646C7)
 private val Accent = Color(0xFF00CEC9)
-private val BgLight = Color(0xFFF7F7FC)
+private val BgLight = Color(0xFFF3F0FF)
 private val CardBg = Color(0xFFFFFFFF)
 private val MutedText = Color(0xFF8A8A9E)
 private val OldChipBg = Color(0xFFF1F1F7)
@@ -60,9 +63,11 @@ private val NewChipBg = Color(0xFFEDE9FE)
 private val WarnChipBg = Color(0xFFFFF3E0)
 private val WarnText = Color(0xFFE67E22)
 private val HeaderGradient = Brush.horizontalGradient(listOf(Primary, PrimaryDark))
+private val SplashGradient = Brush.verticalGradient(listOf(PrimaryDark, Primary))
 
 private val AUDIO_EXTENSIONS = setOf("mp3", "m4a", "aac", "wav", "flac", "ogg", "wma", "opus")
 private const val SINGLES_WORD = "סינגלים"
+private const val APP_NAME = "כלי קבצים"
 
 enum class AppMode { RENAME, SORT }
 
@@ -97,10 +102,85 @@ class MainActivity : ComponentActivity() {
             MaterialTheme(colorScheme = colorScheme) {
                 CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
                     Surface(modifier = Modifier.fillMaxSize(), color = BgLight) {
-                        BatchRenameScreen()
+                        AppRoot()
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+fun AppRoot() {
+    var showSplash by remember { mutableStateOf(true) }
+
+    LaunchedEffect(Unit) {
+        delay(1400)
+        showSplash = false
+    }
+
+    if (showSplash) {
+        AnimatedSplash()
+    } else {
+        BatchRenameScreen()
+    }
+}
+
+@Composable
+fun AnimatedSplash() {
+    val scale = remember { androidx.compose.animation.core.Animatable(0.7f) }
+    val alpha = remember { androidx.compose.animation.core.Animatable(0f) }
+
+    LaunchedEffect(Unit) {
+        launch {
+            scale.animateTo(1f, animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessLow))
+        }
+        launch {
+            alpha.animateTo(1f, animationSpec = tween(600))
+        }
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(SplashGradient),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            modifier = Modifier.graphicsLayer {
+                scaleX = scale.value
+                scaleY = scale.value
+                this.alpha = alpha.value
+            }
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(84.dp)
+                    .clip(CircleShape)
+                    .background(Color.White.copy(alpha = 0.16f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    Icons.Filled.AutoAwesome,
+                    contentDescription = null,
+                    tint = Color.White,
+                    modifier = Modifier.size(42.dp)
+                )
+            }
+            Spacer(modifier = Modifier.height(18.dp))
+            Text(
+                APP_NAME,
+                color = Color.White,
+                fontSize = 24.sp,
+                fontWeight = FontWeight.ExtraBold
+            )
+            Spacer(modifier = Modifier.height(6.dp))
+            Text(
+                "שינוי שמות ומיון קבצים",
+                color = Color.White.copy(alpha = 0.8f),
+                fontSize = 13.sp
+            )
         }
     }
 }
@@ -245,7 +325,7 @@ fun BatchRenameScreen() {
                             when (mode) {
                                 AppMode.RENAME -> "שינוי שמות קבצים"
                                 AppMode.SORT -> "מיון סינגלים"
-                                null -> "כלי קבצים"
+                                null -> APP_NAME
                             },
                             color = Color.White,
                             fontSize = 15.sp,
@@ -300,22 +380,45 @@ fun BatchRenameScreen() {
         ) {
             when (mode) {
 
-                // ---------- מסך בית: בחירת פעולה (ממורכז) ----------
+                // ---------- מסך בית: בחירת פעולה ----------
                 null -> {
                     Column(
                         modifier = Modifier
                             .fillMaxSize()
-                            .verticalScroll(rememberScrollState()),
-                        verticalArrangement = Arrangement.Center,
-                        horizontalAlignment = Alignment.CenterHorizontally
+                            .verticalScroll(rememberScrollState())
                     ) {
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        Box(
+                            modifier = Modifier
+                                .size(64.dp)
+                                .clip(CircleShape)
+                                .background(NewChipBg),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                Icons.Filled.AutoAwesome,
+                                contentDescription = null,
+                                tint = Primary,
+                                modifier = Modifier.size(32.dp)
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.height(14.dp))
+
                         Text(
-                            "מה תרצה לעשות?",
-                            fontSize = 15.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = MutedText,
-                            modifier = Modifier.padding(bottom = 16.dp)
+                            "ברוך הבא!",
+                            fontSize = 20.sp,
+                            fontWeight = FontWeight.ExtraBold
                         )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            "בחר פעולה כדי להתחיל",
+                            fontSize = 13.sp,
+                            color = MutedText
+                        )
+
+                        Spacer(modifier = Modifier.height(22.dp))
 
                         ModeCard(
                             icon = Icons.Filled.DriveFileRenameOutline,
@@ -324,7 +427,7 @@ fun BatchRenameScreen() {
                             modifier = Modifier.fillMaxWidth()
                         ) { mode = AppMode.RENAME }
 
-                        Spacer(modifier = Modifier.height(14.dp))
+                        Spacer(modifier = Modifier.height(12.dp))
 
                         ModeCard(
                             icon = Icons.Filled.LibraryMusic,
@@ -332,6 +435,8 @@ fun BatchRenameScreen() {
                             description = "סרוק תגיות שירים והעבר אוטומטית לתיקיית האמן המתאימה",
                             modifier = Modifier.fillMaxWidth()
                         ) { mode = AppMode.SORT }
+
+                        Spacer(modifier = Modifier.height(16.dp))
                     }
                 }
 
@@ -509,36 +614,38 @@ fun BatchRenameScreen() {
 fun ModeCard(icon: ImageVector, title: String, description: String, modifier: Modifier = Modifier, onClick: () -> Unit) {
     Surface(
         onClick = onClick,
-        shape = RoundedCornerShape(22.dp),
+        shape = RoundedCornerShape(20.dp),
         color = CardBg,
         shadowElevation = 3.dp,
         modifier = modifier
     ) {
-        Column(
-            modifier = Modifier.fillMaxWidth().padding(18.dp),
-            verticalArrangement = Arrangement.Center,
-            horizontalAlignment = Alignment.CenterHorizontally
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
             Box(
                 modifier = Modifier
-                    .size(52.dp)
+                    .size(50.dp)
                     .clip(CircleShape)
                     .background(NewChipBg),
                 contentAlignment = Alignment.Center
             ) {
-                Icon(icon, contentDescription = null, tint = Primary, modifier = Modifier.size(26.dp))
+                Icon(icon, contentDescription = null, tint = Primary, modifier = Modifier.size(24.dp))
             }
-            Spacer(modifier = Modifier.height(10.dp))
-            Text(title, fontSize = 16.sp, fontWeight = FontWeight.ExtraBold, textAlign = TextAlign.Center)
-            Spacer(modifier = Modifier.height(4.dp))
-            Text(
-                description,
-                fontSize = 12.sp,
-                color = MutedText,
-                textAlign = TextAlign.Center,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis
-            )
+            Spacer(modifier = Modifier.width(14.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(title, fontSize = 15.sp, fontWeight = FontWeight.ExtraBold)
+                Spacer(modifier = Modifier.height(2.dp))
+                Text(
+                    description,
+                    fontSize = 12.sp,
+                    color = MutedText,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            Spacer(modifier = Modifier.width(4.dp))
+            Icon(Icons.Filled.ChevronRight, contentDescription = null, tint = MutedText)
         }
     }
 }
@@ -848,6 +955,7 @@ private fun extractArtistFromTags(context: android.content.Context, uri: Uri): S
             ?.trim()
             ?.trim(',')
             ?.trim()
+            ?.let { normalizeName(it) }
             ?.takeIf { it.isNotBlank() }
     } catch (e: Exception) {
         null
@@ -859,10 +967,26 @@ private fun extractArtistFromTags(context: android.content.Context, uri: Uri): S
     }
 }
 
+// מנרמל שם: מסיר רווחים כפולים/מובילים/סוגרים, כדי שהתאמת תיקיות תהיה עקבית
+// גם אם בתגית יש רווחים נוספים שלא נראים לעין.
+private fun normalizeName(raw: String): String {
+    return raw.trim().replace(Regex("\\s+"), " ")
+}
+
+// מחפש תת-תיקייה לפי שם, בהתעלם מרווחים מיותרים ומרישיות - כדי לא "לפספס"
+// תיקייה קיימת בגלל הבדל זעיר שלא נראה לעין (הבאג המקורי).
+private fun DocumentFile.findChildByName(name: String): DocumentFile? {
+    val target = normalizeName(name)
+    return listFiles().firstOrNull { child ->
+        val childName = child.name ?: return@firstOrNull false
+        normalizeName(childName).equals(target, ignoreCase = true)
+    }
+}
+
 private fun folderChainExists(rootTree: DocumentFile, letter: String, artist: String): Boolean {
-    val letterDir = rootTree.findFile(letter) ?: return false
-    val artistDir = letterDir.findFile(artist) ?: return false
-    val singlesDir = artistDir.findFile(SINGLES_WORD) ?: return false
+    val letterDir = rootTree.findChildByName(letter) ?: return false
+    val artistDir = letterDir.findChildByName(artist) ?: return false
+    val singlesDir = artistDir.findChildByName(SINGLES_WORD) ?: return false
     return singlesDir.isDirectory
 }
 
@@ -877,7 +1001,7 @@ fun scanSortFolder(context: android.content.Context, folderUri: Uri, rootUri: Ur
     audioFiles.forEach { file ->
         val name = file.name ?: return@forEach
         val artist = extractArtistFromTags(context, file.uri) ?: return@forEach
-        val letter = artist.trim().firstOrNull()?.toString() ?: return@forEach
+        val letter = artist.firstOrNull()?.toString() ?: return@forEach
         val exists = folderChainExists(rootTree, letter, artist)
         val destDisplay = "$letter / $artist / $SINGLES_WORD / $name"
         result.add(SortItem(file, name, artist, letter, destDisplay, !exists, mutableStateOf(true)))
@@ -907,9 +1031,9 @@ fun performSort(context: android.content.Context, rootUri: Uri, items: List<Sort
 
     items.forEach { item ->
         try {
-            val letterDir = rootTree.findFile(item.letter) ?: rootTree.createDirectory(item.letter)
-            val artistDir = letterDir?.findFile(item.artist) ?: letterDir?.createDirectory(item.artist)
-            val singlesDir = artistDir?.findFile(SINGLES_WORD) ?: artistDir?.createDirectory(SINGLES_WORD)
+            val letterDir = rootTree.findChildByName(item.letter) ?: rootTree.createDirectory(item.letter)
+            val artistDir = letterDir?.findChildByName(item.artist) ?: letterDir?.createDirectory(item.artist)
+            val singlesDir = artistDir?.findChildByName(SINGLES_WORD) ?: artistDir?.createDirectory(SINGLES_WORD)
 
             if (singlesDir == null) {
                 failed++
@@ -917,7 +1041,7 @@ fun performSort(context: android.content.Context, rootUri: Uri, items: List<Sort
             }
 
             val mime = guessAudioMime(item.fileName)
-            val newFile = singlesDir.findFile(item.fileName) ?: singlesDir.createFile(mime, item.fileName)
+            val newFile = singlesDir.findChildByName(item.fileName) ?: singlesDir.createFile(mime, item.fileName)
 
             if (newFile == null) {
                 failed++
