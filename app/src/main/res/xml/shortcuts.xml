@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut
+        android:shortcutId="rename_mode"
+        android:enabled="true"
+        android:icon="@drawable/ic_launcher_foreground"
+        android:shortcutShortLabel="@string/shortcut_rename_short"
+        android:shortcutLongLabel="@string/shortcut_rename_long">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:targetPackage="com.example.batchrename"
+            android:targetClass="com.example.batchrename.MainActivity">
+            <extra android:name="mode" android:value="RENAME" />
+        </intent>
+    </shortcut>
+    <shortcut
+        android:shortcutId="sort_mode"
+        android:enabled="true"
+        android:icon="@drawable/ic_launcher_foreground"
+        android:shortcutShortLabel="@string/shortcut_sort_short"
+        android:shortcutLongLabel="@string/shortcut_sort_long">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:targetPackage="com.example.batchrename"
+            android:targetClass="com.example.batchrename.MainActivity">
+            <extra android:name="mode" android:value="SORT" />
+        </intent>
+    </shortcut>
+</shortcuts>
