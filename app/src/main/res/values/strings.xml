@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">החלף בקליק</string>
+    <string name="shortcut_rename_short">שינוי שמות</string>
+    <string name="shortcut_rename_long">שינוי שמות קבצים</string>
+    <string name="shortcut_sort_short">מיון סינגלים</string>
+    <string name="shortcut_sort_long">מיון סינגלים לפי תגיות</string>
+</resources>
