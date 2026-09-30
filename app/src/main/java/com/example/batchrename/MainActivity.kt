@@ -28,6 +28,7 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.isSystemInDarkTheme
@@ -38,6 +39,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -48,6 +50,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
@@ -100,9 +104,9 @@ private val WarnTextLight = Color(0xFFE67E22)
 
 private val BgDark = Color(0xFF17131F)
 private val CardBgDark = Color(0xFF241E33)
-private val MutedDark = Color(0xFFA79FBD)
-private val OldChipDark = Color(0xFF332B4A)
-private val NewChipDark = Color(0xFF3A2E5C)
+private val MutedDark = Color(0xFFB8AFD0)
+private val OldChipDark = Color(0xFF3E3658)
+private val NewChipDark = Color(0xFF5A4A94)
 private val WarnChipDark = Color(0xFF4A3420)
 private val WarnTextDark = Color(0xFFFFB74D)
 
@@ -118,11 +122,12 @@ data class AppColors(
     val oldChip: Color,
     val newChip: Color,
     val warnChip: Color,
-    val warnText: Color
+    val warnText: Color,
+    val isDark: Boolean
 )
 
-private fun lightAppColors() = AppColors(BgLight, CardBgLight, MutedLight, OldChipLight, NewChipLight, WarnChipLight, WarnTextLight)
-private fun darkAppColors() = AppColors(BgDark, CardBgDark, MutedDark, OldChipDark, NewChipDark, WarnChipDark, WarnTextDark)
+private fun lightAppColors() = AppColors(BgLight, CardBgLight, MutedLight, OldChipLight, NewChipLight, WarnChipLight, WarnTextLight, false)
+private fun darkAppColors() = AppColors(BgDark, CardBgDark, MutedDark, OldChipDark, NewChipDark, WarnChipDark, WarnTextDark, true)
 
 val LocalAppColors = staticCompositionLocalOf { lightAppColors() }
 
@@ -148,6 +153,7 @@ data class SortItem(
     val letter: String,
     val destDisplay: String,
     val willCreateFolder: Boolean,
+    val placeDirectlyInArtistFolder: Boolean,
     val checked: MutableState<Boolean>
 )
 
@@ -317,62 +323,11 @@ fun postCompletionNotification(context: Context, title: String, text: String) {
     }
 }
 
+// מסך הכניסה היחיד עכשיו הוא ה-Splash הנייטיבי של אנדרואיד (מונפש דרך
+// windowSplashScreenAnimatedIcon ב-themes.xml) - אין יותר מסך ביניים נוסף בתוך Compose.
 @Composable
 fun AppRoot(initialModeExtra: MutableState<String?>, themeModeState: MutableState<String>) {
-    var showSplash by remember { mutableStateOf(true) }
-
-    LaunchedEffect(Unit) {
-        delay(1300)
-        showSplash = false
-    }
-
-    if (showSplash) {
-        AnimatedSplash()
-    } else {
-        BatchRenameScreen(initialModeExtra, themeModeState)
-    }
-}
-
-@Composable
-fun AnimatedSplash() {
-    val scale = remember { Animatable(0.75f) }
-    val textAlpha = remember { Animatable(0f) }
-
-    LaunchedEffect(Unit) {
-        launch { scale.animateTo(1f, animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessLow)) }
-        launch { delay(150); textAlpha.animateTo(1f, animationSpec = tween(500)) }
-    }
-
-    Box(
-        modifier = Modifier.fillMaxSize().background(Primary), // זהה בדיוק ל-splash_background הנייטיבי
-        contentAlignment = Alignment.Center
-    ) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Box(
-                modifier = Modifier
-                    .size(88.dp)
-                    .graphicsLayer { scaleX = scale.value; scaleY = scale.value }
-                    .clip(CircleShape)
-                    .background(Color.White.copy(alpha = 0.16f)),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    painter = painterResource(R.drawable.ic_launcher_foreground),
-                    contentDescription = null,
-                    tint = Color.White,
-                    modifier = Modifier.size(50.dp)
-                )
-            }
-            Spacer(modifier = Modifier.height(20.dp))
-            Text(
-                APP_NAME,
-                color = Color.White,
-                fontSize = 24.sp,
-                fontWeight = FontWeight.ExtraBold,
-                modifier = Modifier.graphicsLayer { alpha = textAlpha.value }
-            )
-        }
-    }
+    BatchRenameScreen(initialModeExtra, themeModeState)
 }
 
 @Composable
@@ -410,6 +365,10 @@ fun BatchRenameScreen(initialModeExtra: MutableState<String?>, themeModeState: M
 
     // ---- אישור/דיאלוגים ----
     var confirmStep by remember { mutableStateOf<ConfirmStep?>(null) }
+
+    // ---- חיפוש בסרגל + תפריט החלפת תיקייה ----
+    var searchExpanded by remember { mutableStateOf(false) }
+    var folderMenuExpanded by remember { mutableStateOf(false) }
 
     // ---- ביטול פעולה (Undo) ----
     var undoBatch by remember { mutableStateOf<UndoBatch?>(null) }
@@ -720,80 +679,115 @@ fun BatchRenameScreen(initialModeExtra: MutableState<String?>, themeModeState: M
     Column(modifier = Modifier.fillMaxSize()) {
 
         // ---------- כותרת מודרנית: פינות תחתונות מעוגלות + צל ----------
+        // כשיש רשימת תוצאות על המסך, הכותרת מצטמצמת כדי לפנות מקום לתוכן.
+        val hasListShowing = (mode == AppMode.RENAME && renameItems.isNotEmpty()) || (mode == AppMode.SORT && sortItems.isNotEmpty())
+        val headerVPad = if (hasListShowing && !searchExpanded) 10.dp else 16.dp
+
         Box(
             modifier = Modifier
                 .fillMaxWidth()
                 .shadow(elevation = 10.dp, shape = RoundedCornerShape(bottomStart = 26.dp, bottomEnd = 26.dp))
                 .clip(RoundedCornerShape(bottomStart = 26.dp, bottomEnd = 26.dp))
                 .background(HeaderGradient)
-                .padding(horizontal = 18.dp, vertical = 16.dp)
+                .padding(horizontal = 18.dp, vertical = headerVPad)
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
-                    if (mode != null) {
-                        IconButton(onClick = { mode = null }, modifier = Modifier.size(32.dp)) {
-                            Icon(Icons.Filled.ArrowBack, contentDescription = "חזרה", tint = Color.White)
-                        }
-                        Spacer(modifier = Modifier.width(6.dp))
-                    } else {
-                        Box(
-                            modifier = Modifier.size(34.dp).clip(CircleShape).background(Color.White.copy(alpha = 0.2f)),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(
-                                painter = painterResource(R.drawable.ic_launcher_foreground),
-                                contentDescription = null,
-                                tint = Color.White,
-                                modifier = Modifier.size(19.dp)
-                            )
-                        }
-                        Spacer(modifier = Modifier.width(10.dp))
-                    }
-                    Column {
-                        Text(
-                            when (mode) {
-                                AppMode.RENAME -> "שינוי שמות קבצים"
-                                AppMode.SORT -> "מיון סינגלים"
-                                AppMode.SETTINGS -> "הגדרות"
-                                AppMode.HISTORY -> "היסטוריית פעולות"
-                                null -> APP_NAME
-                            },
-                            color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.ExtraBold,
-                            maxLines = 1, overflow = TextOverflow.Ellipsis
-                        )
-                        val subtitle = when (mode) {
-                            AppMode.RENAME -> if (renameItems.isNotEmpty()) "${renameItems.size} קבצים" else null
-                            AppMode.SORT -> if (sortItems.isNotEmpty()) "${sortItems.size} שירים" else null
-                            else -> null
-                        }
-                        if (subtitle != null) {
-                            Spacer(modifier = Modifier.height(3.dp))
-                            Surface(shape = RoundedCornerShape(50), color = Color.White.copy(alpha = 0.18f)) {
-                                Text(
-                                    subtitle,
-                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
-                                    color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold, maxLines = 1
+            Column(modifier = Modifier.fillMaxWidth()) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                        if (mode != null) {
+                            IconButton(onClick = { mode = null }, modifier = Modifier.size(32.dp)) {
+                                Icon(Icons.Filled.ArrowBack, contentDescription = "חזרה", tint = Color.White)
+                            }
+                            Spacer(modifier = Modifier.width(6.dp))
+                        } else {
+                            Box(
+                                modifier = Modifier.size(34.dp).clip(CircleShape).background(Color.White.copy(alpha = 0.2f)),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    painter = painterResource(R.drawable.ic_launcher_foreground),
+                                    contentDescription = null,
+                                    tint = Color.White,
+                                    modifier = Modifier.size(19.dp)
                                 )
+                            }
+                            Spacer(modifier = Modifier.width(10.dp))
+                        }
+                        Column {
+                            Text(
+                                when (mode) {
+                                    AppMode.RENAME -> "שינוי שמות קבצים"
+                                    AppMode.SORT -> "מיון סינגלים"
+                                    AppMode.SETTINGS -> "הגדרות"
+                                    AppMode.HISTORY -> "היסטוריית פעולות"
+                                    null -> APP_NAME
+                                },
+                                color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.ExtraBold,
+                                maxLines = 1, overflow = TextOverflow.Ellipsis
+                            )
+                            val subtitle = when (mode) {
+                                AppMode.RENAME -> if (renameItems.isNotEmpty()) "${renameItems.size} קבצים" else null
+                                AppMode.SORT -> if (sortItems.isNotEmpty()) "${sortItems.size} שירים" else null
+                                else -> null
+                            }
+                            if (subtitle != null && !hasListShowing) {
+                                Spacer(modifier = Modifier.height(3.dp))
+                                Surface(shape = RoundedCornerShape(50), color = Color.White.copy(alpha = 0.18f)) {
+                                    Text(
+                                        subtitle,
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+                                        color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold, maxLines = 1
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        if (mode == null) {
+                            HeaderIconButton(Icons.Filled.History, "היסטוריה") { mode = AppMode.HISTORY }
+                            HeaderIconButton(Icons.Filled.Settings, "הגדרות") { mode = AppMode.SETTINGS }
+                        }
+                        if ((mode == AppMode.RENAME && renameItems.isNotEmpty()) || (mode == AppMode.SORT && sortItems.isNotEmpty())) {
+                            HeaderIconButton(Icons.Filled.Search, "חיפוש") { searchExpanded = !searchExpanded }
+                        }
+                        if (mode == AppMode.RENAME && hasRenameFolder) {
+                            HeaderIconButton(Icons.Filled.FolderOpen, "החלף תיקייה") { renameFolderPicker.launch(null) }
+                        }
+                        if (mode == AppMode.SORT && (hasSortRoot || hasSortFolder)) {
+                            Box {
+                                HeaderIconButton(Icons.Filled.FolderOpen, "החלף תיקייה") { folderMenuExpanded = true }
+                                DropdownMenu(expanded = folderMenuExpanded, onDismissRequest = { folderMenuExpanded = false }) {
+                                    DropdownMenuItem(
+                                        text = { Text("שנה תיקיית אב") },
+                                        leadingIcon = { Icon(Icons.Filled.AccountTree, contentDescription = null) },
+                                        onClick = { folderMenuExpanded = false; sortRootPicker.launch(null) }
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text("שנה תיקיית מיון") },
+                                        leadingIcon = { Icon(Icons.Filled.FolderOpen, contentDescription = null) },
+                                        onClick = { folderMenuExpanded = false; sortFolderPicker.launch(null) }
+                                    )
+                                }
                             }
                         }
                     }
                 }
 
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    if (mode == null) {
-                        HeaderIconButton(Icons.Filled.History, "היסטוריה") { mode = AppMode.HISTORY }
-                        HeaderIconButton(Icons.Filled.Settings, "הגדרות") { mode = AppMode.SETTINGS }
-                    }
-                    if (mode == AppMode.RENAME && hasRenameFolder) {
-                        HeaderIconButton(Icons.Filled.FolderOpen, "החלף תיקייה") { renameFolderPicker.launch(null) }
-                    }
-                    if (mode == AppMode.SORT) {
-                        if (hasSortRoot) HeaderIconButton(Icons.Filled.AccountTree, "החלף תיקיית אב") { sortRootPicker.launch(null) }
-                        if (hasSortFolder) HeaderIconButton(Icons.Filled.FolderOpen, "החלף תיקיית מיון") { sortFolderPicker.launch(null) }
+                // שורת חיפוש מורחבת בתוך הכותרת עצמה - נפתחת/נסגרת בלחיצה על כפתור החיפוש
+                AnimatedVisibility(visible = searchExpanded) {
+                    Column {
+                        Spacer(modifier = Modifier.height(10.dp))
+                        val (queryValue, onQueryChange, placeholder) = when (mode) {
+                            AppMode.RENAME -> Triple(renameQuery, { s: String -> renameQuery = s }, "חפש קובץ...")
+                            AppMode.SORT -> Triple(sortQuery, { s: String -> sortQuery = s }, "חפש שיר או אמן...")
+                            else -> Triple("", { _: String -> }, "")
+                        }
+                        HeaderSearchField(queryValue, placeholder, onQueryChange)
                     }
                 }
             }
@@ -861,8 +855,6 @@ fun BatchRenameScreen(initialModeExtra: MutableState<String?>, themeModeState: M
                         if (renameFailures.isNotEmpty()) FailuresPanel(renameFailures)
 
                         if (renameItems.isNotEmpty()) {
-                            SearchField(renameQuery, "חפש קובץ...") { renameQuery = it }
-                            Spacer(modifier = Modifier.height(6.dp))
                             SelectAllRow(renameFilteredChecked, filteredRename.size, renameAllFilteredSelected) {
                                 val newValue = !renameAllFilteredSelected
                                 filteredRename.forEach { it.checked.value = newValue }
@@ -904,8 +896,6 @@ fun BatchRenameScreen(initialModeExtra: MutableState<String?>, themeModeState: M
                         if (sortFailures.isNotEmpty()) FailuresPanel(sortFailures)
 
                         if (sortItems.isNotEmpty()) {
-                            SearchField(sortQuery, "חפש שיר או אמן...") { sortQuery = it }
-                            Spacer(modifier = Modifier.height(6.dp))
                             SelectAllRow(sortFilteredChecked, filteredSort.size, sortAllFilteredSelected) {
                                 val newValue = !sortAllFilteredSelected
                                 filteredSort.forEach { it.checked.value = newValue }
@@ -924,7 +914,9 @@ fun BatchRenameScreen(initialModeExtra: MutableState<String?>, themeModeState: M
                                 contentPadding = PaddingValues(bottom = 18.dp)
                             ) {
                                 groupedSort.forEach { (artist, songs) ->
-                                    item { GroupHeader(artist, songs.size) }
+                                    if (songs.size > 1) {
+                                        item { GroupHeader(artist, songs.size) }
+                                    }
                                     items(songs) { item -> SortCard(item, haptics) }
                                 }
                             }
@@ -1077,26 +1069,43 @@ fun FolderPickerCard(icon: ImageVector, title: String, description: String, onCl
     }
 }
 
+// שדה חיפוש בתוך הכותרת הסגולה - ללא גובה קבוע (מונע חיתוך טקסט), טקסט לבן על רקע שקוף.
 @Composable
-fun SearchField(value: String, placeholder: String, onChange: (String) -> Unit) {
-    val colors = LocalAppColors.current
-    OutlinedTextField(
-        value = value,
-        onValueChange = onChange,
-        placeholder = { Text(placeholder, fontSize = 13.sp) },
-        leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null, modifier = Modifier.size(18.dp)) },
-        trailingIcon = {
+fun HeaderSearchField(value: String, placeholder: String, onChange: (String) -> Unit) {
+    val focusRequester = remember { FocusRequester() }
+    LaunchedEffect(Unit) { focusRequester.requestFocus() }
+
+    Surface(shape = RoundedCornerShape(14.dp), color = Color.White.copy(alpha = 0.16f), modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(Icons.Filled.Search, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
+            Spacer(modifier = Modifier.width(8.dp))
+            BasicTextField(
+                value = value,
+                onValueChange = onChange,
+                singleLine = true,
+                textStyle = androidx.compose.ui.text.TextStyle(fontSize = 14.sp, color = Color.White),
+                cursorBrush = androidx.compose.ui.graphics.SolidColor(Color.White),
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                modifier = Modifier.weight(1f).padding(vertical = 12.dp).focusRequester(focusRequester),
+                decorationBox = { innerTextField ->
+                    Box {
+                        if (value.isEmpty()) {
+                            Text(placeholder, fontSize = 14.sp, color = Color.White.copy(alpha = 0.7f))
+                        }
+                        innerTextField()
+                    }
+                }
+            )
             if (value.isNotEmpty()) {
-                IconButton(onClick = { onChange("") }) { Icon(Icons.Filled.Close, contentDescription = "נקה", modifier = Modifier.size(16.dp)) }
+                IconButton(onClick = { onChange("") }, modifier = Modifier.size(28.dp)) {
+                    Icon(Icons.Filled.Close, contentDescription = "נקה", tint = Color.White, modifier = Modifier.size(16.dp))
+                }
             }
-        },
-        singleLine = true,
-        textStyle = androidx.compose.ui.text.TextStyle(fontSize = 13.sp),
-        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-        shape = RoundedCornerShape(14.dp),
-        colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = Primary, unfocusedContainerColor = colors.cardBg, focusedContainerColor = colors.cardBg),
-        modifier = Modifier.fillMaxWidth().height(52.dp)
-    )
+        }
+    }
 }
 
 @Composable
@@ -1106,7 +1115,10 @@ fun SelectAllRow(checkedCount: Int, total: Int, allSelected: Boolean, onToggle: 
         modifier = Modifier.fillMaxWidth().padding(top = 4.dp, bottom = 4.dp),
         horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically
     ) {
-        Surface(onClick = onToggle, shape = RoundedCornerShape(50), color = if (allSelected) colors.oldChip else colors.newChip) {
+        Surface(
+            onClick = onToggle, shape = RoundedCornerShape(50), color = if (allSelected) colors.oldChip else colors.newChip,
+            border = if (colors.isDark) BorderStroke(1.dp, colors.mutedText.copy(alpha = 0.35f)) else null
+        ) {
             Row(modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp), verticalAlignment = Alignment.CenterVertically) {
                 Icon(
                     if (allSelected) Icons.Filled.RemoveDone else Icons.Filled.DoneAll,
@@ -1232,7 +1244,7 @@ fun FileRenameCard(item: RenameItem, haptics: androidx.compose.ui.hapticfeedback
         modifier = Modifier.fillMaxWidth().animateContentSize()
     ) {
         Row(modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-            Checkbox(checked = item.checked.value, onCheckedChange = null, colors = CheckboxDefaults.colors(checkedColor = Primary))
+            Checkbox(checked = item.checked.value, onCheckedChange = null, colors = CheckboxDefaults.colors(checkedColor = Primary, uncheckedColor = colors.mutedText, checkmarkColor = Color.White))
             Spacer(modifier = Modifier.width(4.dp))
             Column(modifier = Modifier.weight(1f)) {
                 NameRow("לפני", item.oldName, false)
@@ -1252,7 +1264,7 @@ fun SortCard(item: SortItem, haptics: androidx.compose.ui.hapticfeedback.HapticF
         modifier = Modifier.fillMaxWidth().animateContentSize()
     ) {
         Row(modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-            Checkbox(checked = item.checked.value, onCheckedChange = null, colors = CheckboxDefaults.colors(checkedColor = Primary))
+            Checkbox(checked = item.checked.value, onCheckedChange = null, colors = CheckboxDefaults.colors(checkedColor = Primary, uncheckedColor = colors.mutedText, checkmarkColor = Color.White))
             Spacer(modifier = Modifier.width(4.dp))
             Column(modifier = Modifier.weight(1f)) {
                 NameRow("קובץ", item.fileName, false)
@@ -1461,19 +1473,6 @@ private fun collectAudioFiles(dir: DocumentFile, acc: MutableList<DocumentFile>)
     }
 }
 
-// כמו collectAudioFiles, אבל לא נכנס לתוך תיקיות שכבר נקראות "סינגלים" -
-// אלה כבר ממוינות, אין טעם לסרוק אותן שוב כשסורקים את כל תיקיית האב.
-private fun collectAudioFilesSkippingSingles(dir: DocumentFile, acc: MutableList<DocumentFile>) {
-    dir.listFiles().forEach { f ->
-        if (f.isDirectory) {
-            val dirName = f.name?.let { normalizeName(it) } ?: ""
-            if (!dirName.equals(SINGLES_WORD, ignoreCase = true)) collectAudioFilesSkippingSingles(f, acc)
-        } else if (f.isFile && isAudioFile(f.name)) {
-            acc.add(f)
-        }
-    }
-}
-
 private fun extractArtistFromTags(context: Context, uri: Uri): String? {
     val retriever = MediaMetadataRetriever()
     return try {
@@ -1509,14 +1508,41 @@ private fun DocumentFile.findChildByName(name: String): DocumentFile? {
     }
 }
 
-private fun folderChainExists(rootTree: DocumentFile, letter: String, artist: String): Boolean {
-    val letterDir = rootTree.findChildByName(letter) ?: return false
-    val artistDir = letterDir.findChildByName(artist) ?: return false
-    val singlesDir = artistDir.findChildByName(SINGLES_WORD) ?: return false
-    return singlesDir.isDirectory
+// מזהה אם לתיקיית האמן כבר יש תת-תיקיית "סינגלים", ואם לא - האם יש בה
+// (ישירות, לא ברקורסיה) קבצי אודיו "יתומים" שכבר מתויגים כ"סינגלים". אם כן,
+// זה סימן שהמוסכמה לאמן הזה היא לשים סינגלים ישירות בתיקייה שלו, לא בתת-תיקייה.
+private data class ArtistPlacement(val artistDir: DocumentFile?, val placeDirectly: Boolean, val willCreateFolder: Boolean)
+
+private val placementCache = java.util.concurrent.ConcurrentHashMap<String, ArtistPlacement>()
+
+private fun resolveArtistPlacement(context: Context, rootTree: DocumentFile, letter: String, artist: String): ArtistPlacement {
+    val cacheKey = "$letter|$artist"
+    placementCache[cacheKey]?.let { return it }
+
+    val letterDir = rootTree.findChildByName(letter)
+    val artistDir = letterDir?.findChildByName(artist)
+    val singlesDir = artistDir?.findChildByName(SINGLES_WORD)
+
+    val result = when {
+        singlesDir != null && singlesDir.isDirectory -> ArtistPlacement(artistDir, placeDirectly = false, willCreateFolder = false)
+        artistDir != null -> {
+            val hasLooseSingles = artistDir.listFiles().any { f ->
+                f.isFile && isAudioFile(f.name) && extractArtistFromTags(context, f.uri) != null
+            }
+            if (hasLooseSingles) {
+                ArtistPlacement(artistDir, placeDirectly = true, willCreateFolder = false)
+            } else {
+                ArtistPlacement(artistDir, placeDirectly = false, willCreateFolder = true)
+            }
+        }
+        else -> ArtistPlacement(null, placeDirectly = false, willCreateFolder = true)
+    }
+    placementCache[cacheKey] = result
+    return result
 }
 
 // סריקה מקבילית (עד 6 קבצים בו-זמנית) עם מטמון תוצאות בזיכרון.
+// סורקת אך ורק את תיקיית המיון שנבחרה - לא את כל תיקיית האב - כדי להישאר מהירה.
 suspend fun scanSortFolder(
     context: Context,
     folderUri: Uri,
@@ -1539,15 +1565,10 @@ suspend fun scanSortFolder(
         }
     }
 
-    // 1) קבצים בתיקיית המיון שנבחרה
+    placementCache.clear()
+
     val audioFiles = mutableListOf<DocumentFile>()
     collectAudioFiles(folderTree, audioFiles)
-
-    // 2) בנוסף: קבצים "יתומים" בתוך תיקיית האב עם תגית "סינגלים" שעדיין לא ממוינים
-    val rootAudioFiles = mutableListOf<DocumentFile>()
-    collectAudioFilesSkippingSingles(rootTree, rootAudioFiles)
-    val existingUris = audioFiles.map { it.uri }.toSet()
-    rootAudioFiles.forEach { f -> if (f.uri !in existingUris) audioFiles.add(f) }
 
     val total = audioFiles.size
     val processed = AtomicInteger(0)
@@ -1562,9 +1583,9 @@ suspend fun scanSortFolder(
                         val artist = extractArtistFromTags(context, file.uri)
                         val letter = artist?.firstOrNull()?.toString()
                         if (artist != null && letter != null) {
-                            val exists = folderChainExists(rootTree, letter, artist)
-                            val destDisplay = "$letter / $artist / $SINGLES_WORD / $name"
-                            SortItem(file, name, artist, letter, destDisplay, !exists, mutableStateOf(true))
+                            val placement = resolveArtistPlacement(context, rootTree, letter, artist)
+                            val destDisplay = if (placement.placeDirectly) "$letter / $artist / $name" else "$letter / $artist / $SINGLES_WORD / $name"
+                            SortItem(file, name, artist, letter, destDisplay, placement.willCreateFolder, placement.placeDirectly, mutableStateOf(true))
                         } else null
                     } else null
                     onProgress(processed.incrementAndGet(), total)
@@ -1595,8 +1616,8 @@ fun findDuplicateTargets(context: Context, rootUri: Uri, items: List<SortItem>):
         if (!item.willCreateFolder) {
             val letterDir = rootTree.findChildByName(item.letter)
             val artistDir = letterDir?.findChildByName(item.artist)
-            val singlesDir = artistDir?.findChildByName(SINGLES_WORD)
-            val existing = singlesDir?.findChildByName(item.fileName)
+            val targetDir = if (item.placeDirectlyInArtistFolder) artistDir else artistDir?.findChildByName(SINGLES_WORD)
+            val existing = targetDir?.findChildByName(item.fileName)
             if (existing != null) dup.add(item.documentFile.uri)
         }
     }
@@ -1617,15 +1638,19 @@ fun performSort(context: Context, rootUri: Uri, items: List<SortItem>, onProgres
         try {
             val letterDir = rootTree.findChildByName(item.letter) ?: rootTree.createDirectory(item.letter)
             val artistDir = letterDir?.findChildByName(item.artist) ?: letterDir?.createDirectory(item.artist)
-            val singlesDir = artistDir?.findChildByName(SINGLES_WORD) ?: artistDir?.createDirectory(SINGLES_WORD)
+            val targetDir = if (item.placeDirectlyInArtistFolder) {
+                artistDir
+            } else {
+                artistDir?.findChildByName(SINGLES_WORD) ?: artistDir?.createDirectory(SINGLES_WORD)
+            }
 
-            if (singlesDir == null) {
+            if (targetDir == null) {
                 failures.add(FailureDetail(item.fileName, "לא ניתן ליצור את תיקיית היעד"))
                 return@forEachIndexed
             }
 
             val mime = guessAudioMime(item.fileName)
-            val newFile = singlesDir.findChildByName(item.fileName) ?: singlesDir.createFile(mime, item.fileName)
+            val newFile = targetDir.findChildByName(item.fileName) ?: targetDir.createFile(mime, item.fileName)
 
             if (newFile == null) {
                 failures.add(FailureDetail(item.fileName, "יצירת קובץ היעד נכשלה"))
@@ -1650,7 +1675,7 @@ fun performSort(context: Context, rootUri: Uri, items: List<SortItem>, onProgres
 
             item.documentFile.delete()
             success++
-            records.add(MoveRecord(singlesDir, item.fileName, originalParent, originalName))
+            records.add(MoveRecord(targetDir, item.fileName, originalParent, originalName))
         } catch (e: Exception) {
             failures.add(FailureDetail(item.fileName, e.message ?: "שגיאה לא ידועה"))
         }
