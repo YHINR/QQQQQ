@@ -498,12 +498,16 @@ fun BatchRenameScreen(initialModeExtra: MutableState<String?>, themeModeState: M
         }
     }
 
-    // כפתור/קיצור מהמסך הראשי - קפיצה ישירה למצב מבוקש
+    // כפתור/קיצור מהמסך הראשי - קפיצה ישירה למצב מבוקש.
+    // מאפסים את הערך מיד אחרי הצריכה - אחרת לחיצה חוזרת על אותו קיצור-דרך
+    // (אותה מחרוזת "RENAME"/"SORT" בדיוק) לא הייתה מפעילה את ה-LaunchedEffect
+    // שוב, כי המפתח שלו לא היה משתנה, והקיצור היה נראה "לא עובד" בפעם השנייה.
     LaunchedEffect(initialModeExtra.value) {
         when (initialModeExtra.value) {
             "RENAME" -> mode = AppMode.RENAME
             "SORT" -> mode = AppMode.SORT
         }
+        if (initialModeExtra.value != null) initialModeExtra.value = null
     }
 
     // ביטול אוטומטי של Undo אחרי 6 שניות
@@ -2200,7 +2204,8 @@ fun performSort(context: Context, rootUri: Uri, items: List<SortItem>, onProgres
             }
 
             val mime = guessAudioMime(item.fileName)
-            val newFile = targetDir.findChildByName(item.fileName) ?: targetDir.createFile(mime, item.fileName)
+            val existingAtTarget = targetDir.findChildByName(item.fileName)
+            val newFile = existingAtTarget ?: targetDir.createFile(mime, item.fileName)
 
             if (newFile == null) {
                 failures.add(FailureDetail(item.fileName, "יצירת קובץ היעד נכשלה"))
@@ -2226,7 +2231,17 @@ fun performSort(context: Context, rootUri: Uri, items: List<SortItem>, onProgres
             // היעד בפועל - כך גם קובץ מקור ריק באמת מאומת כראוי.
             val destLength = newFile.length()
             if (destLength != bytesCopied) {
-                failures.add(FailureDetail(item.fileName, "אימות תקינות נכשל - הגדלים אינם תואמים"))
+                // מוחקים את הקובץ החלקי/פגום שנוצר ביעד - לא רוצים להשאיר שם קובץ
+                // קטוע בשם הנכון שעלול להיראות כאילו ההעברה הצליחה. אם זו הייתה
+                // דריסה של קובץ שכבר היה שם, הוא כבר נפגע ב-openOutputStream (שמקצר
+                // את הקובץ בפתיחה) - אי אפשר לשחזר אותו, אבל לפחות מודיעים על כך בבירור.
+                newFile.delete()
+                val msg = if (existingAtTarget != null) {
+                    "אימות תקינות נכשל - ההעתקה נקטעה (קובץ קיים ביעד נדרס ונפגע)"
+                } else {
+                    "אימות תקינות נכשל - הגדלים אינם תואמים"
+                }
+                failures.add(FailureDetail(item.fileName, msg))
                 return@forEachIndexed
             }
 
@@ -2317,8 +2332,12 @@ fun restoreHistoryEntry(context: Context, entry: HistoryEntry): Pair<Int, Int> {
                     val fileName = d.fileName
                     val originalName = d.originalName
                     if (destDirUri != null && originalParentUri != null && fileName != null && originalName != null) {
-                        val destDir = DocumentFile.fromSingleUri(context, destDirUri)
-                        val originalParent = DocumentFile.fromSingleUri(context, originalParentUri)
+                        // fromSingleUri עטף את ה-URI כקובץ בודד לקריאה בלבד (listFiles/createFile
+                        // לא נתמכים ותמיד נכשלים) - fromTreeUri כן תומך בניווט תיקייה מלא, וזה
+                        // עובד גם על URI של תת-תיקייה (לא רק שורש העץ), כי ה-URI כבר מכיל את
+                        // מזהה העץ ואת מזהה המסמך של התיקייה הספציפית הזו.
+                        val destDir = DocumentFile.fromTreeUri(context, destDirUri)
+                        val originalParent = DocumentFile.fromTreeUri(context, originalParentUri)
                         if (destDir != null && originalParent != null) {
                             undoMove(context, MoveRecord(destDir, fileName, originalParent, originalName))
                         } else false
