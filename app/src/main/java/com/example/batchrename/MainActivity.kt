@@ -239,36 +239,48 @@ object AppPrefs {
 
     fun getHistory(context: Context): List<HistoryEntry> {
         val raw = prefs(context).getString(KEY_HISTORY, null) ?: return emptyList()
-        return try {
-            val arr = JSONArray(raw)
-            (0 until arr.length()).map { i ->
+        val arr = try {
+            JSONArray(raw)
+        } catch (e: Exception) {
+            return emptyList()
+        }
+        // כל רשומה (וכל פרט בתוכה) מנותחת בנפרד - רשומה אחת פגומה רק מדלגת
+        // על עצמה, ולא מוחקת את כל שאר ההיסטוריה.
+        val entries = mutableListOf<HistoryEntry>()
+        for (i in 0 until arr.length()) {
+            try {
                 val o = arr.getJSONObject(i)
                 val detailsArr = o.optJSONArray("details")
                 val details = mutableListOf<HistoryDetail>()
                 if (detailsArr != null) {
                     for (j in 0 until detailsArr.length()) {
-                        val d = detailsArr.getJSONObject(j)
-                        details.add(
-                            HistoryDetail(
-                                kind = d.getString("kind"),
-                                displayFrom = d.getString("from"),
-                                displayTo = d.getString("to"),
-                                folderUri = d.optString("folderUri", null),
-                                oldName = d.optString("oldName", null),
-                                newName = d.optString("newName", null),
-                                destDirUri = d.optString("destDirUri", null),
-                                originalParentUri = d.optString("originalParentUri", null),
-                                originalName = d.optString("originalName", null),
-                                fileName = d.optString("fileName", null)
+                        try {
+                            val d = detailsArr.getJSONObject(j)
+                            details.add(
+                                HistoryDetail(
+                                    kind = d.getString("kind"),
+                                    displayFrom = d.getString("from"),
+                                    displayTo = d.getString("to"),
+                                    folderUri = d.optString("folderUri", null),
+                                    oldName = d.optString("oldName", null),
+                                    newName = d.optString("newName", null),
+                                    destDirUri = d.optString("destDirUri", null),
+                                    originalParentUri = d.optString("originalParentUri", null),
+                                    originalName = d.optString("originalName", null),
+                                    fileName = d.optString("fileName", null)
+                                )
                             )
-                        )
+                        } catch (e: Exception) {
+                            // פרט בודד פגום - מדלגים עליו בלבד
+                        }
                     }
                 }
-                HistoryEntry(o.getString("type"), o.getInt("count"), o.getInt("failed"), o.getLong("time"), details)
-            }.reversed()
-        } catch (e: Exception) {
-            emptyList()
+                entries.add(HistoryEntry(o.getString("type"), o.getInt("count"), o.getInt("failed"), o.getLong("time"), details))
+            } catch (e: Exception) {
+                // רשומה בודדת פגומה - מדלגים עליה בלבד, לא מאבדים את כל ההיסטוריה
+            }
         }
+        return entries.reversed()
     }
 
     fun addHistoryEntry(context: Context, entry: HistoryEntry) {
@@ -581,11 +593,14 @@ fun BatchRenameScreen(initialModeExtra: MutableState<String?>, themeModeState: M
         }
     }
 
-    // מריץ סריקה אוטומטית ברגע ששתי התיקיות (אב + מיון) נבחרו
+    // מריץ סריקה אוטומטית ברגע ששתי התיקיות (אב + מיון) נבחרו.
+    // בודקים isScanningSort כדי למנוע הרצה כפולה אם LaunchedEffect(mode) כבר
+    // הפעיל בו-זמנית סריקה מכיוון הכניסה למצב (למשל בכניסה דרך קיצור-דרך
+    // כשתיקיית אב ברירת המחדל נטענת באותו רגע).
     LaunchedEffect(sortRootUri, sortFolderUri) {
         val root = sortRootUri
         val folder = sortFolderUri
-        if (root != null && folder != null) {
+        if (root != null && folder != null && !isScanningSort) {
             sortStatusText = ""
             sortFailures = emptyList()
             isScanningSort = true
@@ -601,11 +616,14 @@ fun BatchRenameScreen(initialModeExtra: MutableState<String?>, themeModeState: M
 
     fun refreshRename(uri: Uri) {
         scope.launch {
+            isScanningRename = true
             renameItems = withContext(Dispatchers.IO) { scanRenameFolder(context, uri, underscoreToSpace) }
+            isScanningRename = false
         }
     }
 
     fun refreshSort(folder: Uri, root: Uri, forceRefresh: Boolean) {
+        if (isScanningSort) return
         scope.launch {
             isScanningSort = true
             sortProgress = 0 to 0
@@ -962,45 +980,129 @@ fun BatchRenameScreen(initialModeExtra: MutableState<String?>, themeModeState: M
 
                 // ---------- מסך בית ----------
                 null -> {
-                    Column(
-                        modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
-                        verticalArrangement = Arrangement.Center
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Box(
-                                modifier = Modifier.size(52.dp).clip(CircleShape).background(colors.newChip),
-                                contentAlignment = Alignment.Center
+                    val recentHistory = remember(currentMode) { AppPrefs.getHistory(context).take(2) }
+                    val homeDateFormat = remember { SimpleDateFormat("dd/MM HH:mm", Locale("he")) }
+
+                    Box(modifier = Modifier.fillMaxSize()) {
+                        // קישוט רקע עדין שממלא את השטח הפנוי למטה, כדי שהמסך לא
+                        // יישאר עם שטח ריק גדול מתחת לתוכן במסכים גבוהים.
+                        Icon(
+                            Icons.Filled.AutoAwesome,
+                            contentDescription = null,
+                            tint = colors.newChip.copy(alpha = if (colors.isDark) 0.35f else 0.55f),
+                            modifier = Modifier.size(300.dp).align(Alignment.BottomCenter).offset(y = 90.dp, x = 60.dp)
+                        )
+
+                        Column(
+                            modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Box(
+                                    modifier = Modifier.size(52.dp).clip(CircleShape).background(TileGradient),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        painter = painterResource(R.drawable.ic_launcher_foreground),
+                                        contentDescription = null, tint = Color.White, modifier = Modifier.size(28.dp)
+                                    )
+                                }
+                                Spacer(modifier = Modifier.width(14.dp))
+                                Column {
+                                    Text("ברוך הבא", fontSize = 19.sp, fontWeight = FontWeight.ExtraBold)
+                                    Text("בחר פעולה כדי להתחיל", fontSize = 12.sp, color = colors.mutedText)
+                                }
+                            }
+
+                            Spacer(modifier = Modifier.height(28.dp))
+                            Text("פעולות זמינות", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = colors.mutedText)
+                            Spacer(modifier = Modifier.height(10.dp))
+
+                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                                ActionTile(
+                                    icon = Icons.Filled.DriveFileRenameOutline,
+                                    title = "שינוי שמות",
+                                    subtitle = "החלפת סדר בשמות קבצים",
+                                    gradient = TileGradient,
+                                    modifier = Modifier.weight(1f).aspectRatio(0.95f)
+                                ) { mode = AppMode.RENAME }
+
+                                ActionTile(
+                                    icon = Icons.Filled.LibraryMusic,
+                                    title = "מיון סינגלים",
+                                    subtitle = "מיון שירים לפי תגיות",
+                                    gradient = Brush.linearGradient(listOf(Accent, Primary)),
+                                    modifier = Modifier.weight(1f).aspectRatio(0.95f)
+                                ) { mode = AppMode.SORT }
+                            }
+
+                            Spacer(modifier = Modifier.height(28.dp))
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Icon(
-                                    painter = painterResource(R.drawable.ic_launcher_foreground),
-                                    contentDescription = null, tint = Primary, modifier = Modifier.size(28.dp)
-                                )
+                                Text("פעילות אחרונה", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = colors.mutedText)
+                                if (recentHistory.isNotEmpty()) {
+                                    TextButton(onClick = { mode = AppMode.HISTORY }) {
+                                        Text("הצג הכל", fontSize = 12.sp, color = Primary)
+                                    }
+                                }
                             }
-                            Spacer(modifier = Modifier.width(14.dp))
-                            Column {
-                                Text("ברוך הבא", fontSize = 18.sp, fontWeight = FontWeight.ExtraBold)
-                                Text("בחר פעולה כדי להתחיל", fontSize = 12.sp, color = colors.mutedText)
+                            Spacer(modifier = Modifier.height(8.dp))
+
+                            if (recentHistory.isEmpty()) {
+                                Surface(shape = RoundedCornerShape(16.dp), color = colors.cardBg, shadowElevation = 1.dp, modifier = Modifier.fillMaxWidth()) {
+                                    Row(modifier = Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                                        Icon(Icons.Filled.Lightbulb, contentDescription = null, tint = colors.warnText, modifier = Modifier.size(18.dp))
+                                        Spacer(modifier = Modifier.width(10.dp))
+                                        Text(
+                                            "פעולות שתבצע יופיעו כאן, ואפשר יהיה לבטל אותן מאוחר יותר",
+                                            fontSize = 12.sp, color = colors.mutedText, modifier = Modifier.weight(1f)
+                                        )
+                                    }
+                                }
+                            } else {
+                                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    recentHistory.forEach { entry ->
+                                        Surface(
+                                            onClick = { mode = AppMode.HISTORY },
+                                            shape = RoundedCornerShape(16.dp), color = colors.cardBg, shadowElevation = 1.dp,
+                                            modifier = Modifier.fillMaxWidth()
+                                        ) {
+                                            Row(modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                                                Box(
+                                                    modifier = Modifier.size(34.dp).clip(CircleShape).background(colors.newChip),
+                                                    contentAlignment = Alignment.Center
+                                                ) {
+                                                    Icon(
+                                                        if (entry.type == "rename") Icons.Filled.DriveFileRenameOutline else Icons.Filled.LibraryMusic,
+                                                        contentDescription = null, tint = Primary, modifier = Modifier.size(16.dp)
+                                                    )
+                                                }
+                                                Spacer(modifier = Modifier.width(10.dp))
+                                                Column(modifier = Modifier.weight(1f)) {
+                                                    Text(
+                                                        if (entry.type == "rename") "שינוי שמות - ${entry.count} קבצים" else "מיון סינגלים - ${entry.count} שירים",
+                                                        fontSize = 13.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis
+                                                    )
+                                                    Text(homeDateFormat.format(Date(entry.timestamp)), fontSize = 11.sp, color = colors.mutedText)
+                                                }
+                                                if (entry.failedCount > 0) {
+                                                    Surface(shape = RoundedCornerShape(50), color = colors.warnChip) {
+                                                        Text(
+                                                            "${entry.failedCount} נכשלו",
+                                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                                                            fontSize = 10.sp, fontWeight = FontWeight.Bold, color = colors.warnText
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
                             }
-                        }
 
-                        Spacer(modifier = Modifier.height(26.dp))
-                        Text("פעולות זמינות", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = colors.mutedText)
-                        Spacer(modifier = Modifier.height(10.dp))
-
-                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                            ActionTile(
-                                icon = Icons.Filled.DriveFileRenameOutline,
-                                title = "שינוי שמות",
-                                subtitle = "החלפת סדר בשמות קבצים",
-                                modifier = Modifier.weight(1f).aspectRatio(0.75f)
-                            ) { mode = AppMode.RENAME }
-
-                            ActionTile(
-                                icon = Icons.Filled.LibraryMusic,
-                                title = "מיון סינגלים",
-                                subtitle = "מיון שירים לפי תגיות",
-                                modifier = Modifier.weight(1f).aspectRatio(0.75f)
-                            ) { mode = AppMode.SORT }
+                            Spacer(modifier = Modifier.height(24.dp))
                         }
                     }
                 }
@@ -1012,7 +1114,7 @@ fun BatchRenameScreen(initialModeExtra: MutableState<String?>, themeModeState: M
                             icon = Icons.Filled.FolderOpen,
                             title = "בחר תיקייה",
                             description = "בחר את התיקייה שבה נמצאים הקבצים לשינוי שם",
-                            tip = "טיפ: אפשר לבחור כל תיקייה שמכילה קבצים עם מקף (\" - \") בשם שלהם",
+                            tip = "אפשר לבחור כל תיקייה שמכילה קבצים עם מקף (\" - \") בשם שלהם",
                             onClick = { renameFolderPicker.launch(null) }
                         )
                     } else {
@@ -1056,34 +1158,25 @@ fun BatchRenameScreen(initialModeExtra: MutableState<String?>, themeModeState: M
                 // ---------- מצב מיון סינגלים ----------
                 AppMode.SORT -> {
                     if (!hasSortRoot || !hasSortFolder) {
-                        Column(
-                            modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
-                            verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally
-                        ) {
-                            Box(
-                                modifier = Modifier.size(84.dp).clip(CircleShape).background(colors.newChip),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Icon(Icons.Filled.LibraryMusic, contentDescription = null, tint = Primary, modifier = Modifier.size(40.dp))
-                            }
-                            Spacer(modifier = Modifier.height(10.dp))
-                            Text(
-                                if (!hasSortRoot) "שלב 1 מתוך 2" else "שלב 2 מתוך 2",
-                                fontSize = 11.sp, fontWeight = FontWeight.Bold, color = colors.mutedText
+                        if (!hasSortRoot) {
+                            EmptyFolderPrompt(
+                                icon = Icons.Filled.AccountTree,
+                                title = "בחר תיקיית אב",
+                                description = "התיקייה עם האותיות א׳ ב׳ ג׳ שבתוכן תיקיות האמנים",
+                                buttonLabel = "בחר תיקיית אב",
+                                tip = "תיקיית האב היא זו שבה כבר יש תיקיות לפי אותיות (א, ב, ג...) ובתוכן תיקיות האמנים",
+                                badge = "שלב 1 מתוך 2",
+                                onClick = { sortRootPicker.launch(null) }
                             )
-                            Spacer(modifier = Modifier.height(18.dp))
-
-                            if (!hasSortRoot) {
-                                FolderPickerCard(Icons.Filled.AccountTree, "בחר תיקיית אב", "התיקייה עם האותיות א׳ ב׳ ג׳ שבתוכן תיקיות האמנים") { sortRootPicker.launch(null) }
-                            } else {
-                                FolderPickerCard(Icons.Filled.FolderOpen, "בחר תיקיית מיון", "התיקייה עם השירים שיש לסרוק ולמיין") { sortFolderPicker.launch(null) }
-                            }
-
-                            Spacer(modifier = Modifier.height(16.dp))
-                            Text(
-                                "טיפ: תיקיית האב היא זו שבה כבר יש תיקיות לפי אותיות (א, ב, ג...) ובתוכן תיקיות האמנים",
-                                fontSize = 11.sp, color = colors.mutedText, textAlign = TextAlign.Center,
-                                modifier = Modifier.padding(horizontal = 32.dp)
+                        } else {
+                            EmptyFolderPrompt(
+                                icon = Icons.Filled.LibraryMusic,
+                                title = "בחר תיקיית מיון",
+                                description = "התיקייה עם השירים שיש לסרוק ולמיין",
+                                buttonLabel = "בחר תיקיית מיון",
+                                tip = "אפשר לבחור כל תיקייה עם שירים שיש בתגיות שלהם את המילה \"$SINGLES_WORD\"",
+                                badge = "שלב 2 מתוך 2",
+                                onClick = { sortFolderPicker.launch(null) }
                             )
                         }
                     } else if (isScanningSort) {
@@ -1234,11 +1327,18 @@ fun HeaderIconButton(icon: ImageVector, description: String, onClick: () -> Unit
 }
 
 @Composable
-fun ActionTile(icon: ImageVector, title: String, subtitle: String, modifier: Modifier = Modifier, onClick: () -> Unit) {
+fun ActionTile(
+    icon: ImageVector,
+    title: String,
+    subtitle: String,
+    modifier: Modifier = Modifier,
+    gradient: Brush = TileGradient,
+    onClick: () -> Unit
+) {
     val colors = LocalAppColors.current
     Surface(onClick = onClick, shape = RoundedCornerShape(24.dp), color = colors.cardBg, shadowElevation = 4.dp, modifier = modifier) {
         Column(modifier = Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
-            Box(modifier = Modifier.size(58.dp).clip(CircleShape).background(TileGradient), contentAlignment = Alignment.Center) {
+            Box(modifier = Modifier.size(58.dp).clip(CircleShape).background(gradient), contentAlignment = Alignment.Center) {
                 Icon(icon, contentDescription = null, tint = Color.White, modifier = Modifier.size(28.dp))
             }
             Spacer(modifier = Modifier.height(12.dp))
@@ -1249,43 +1349,89 @@ fun ActionTile(icon: ImageVector, title: String, subtitle: String, modifier: Mod
     }
 }
 
+// מסך "ריק" מעוצב מחדש: אייקון-רקע ענק ועדין ממלא את השטח הפנוי (כדי שלא
+// יישאר "שטח מת" ריק לגמרי כמו קודם), אווטאר בגרדיאנט, וכפתור פעולה בולט
+// בצורת גלולה במקום כרטיס שורה שטוח. badge אופציונלי מציג "שלב X מתוך Y".
 @Composable
-fun FolderPickerCard(icon: ImageVector, title: String, description: String, onClick: () -> Unit) {
+fun EmptyFolderPrompt(
+    icon: ImageVector,
+    title: String,
+    description: String,
+    buttonLabel: String = "בחר תיקייה",
+    tip: String? = null,
+    badge: String? = null,
+    onClick: () -> Unit
+) {
     val colors = LocalAppColors.current
-    Surface(onClick = onClick, shape = RoundedCornerShape(18.dp), color = colors.cardBg, shadowElevation = 2.dp, modifier = Modifier.fillMaxWidth()) {
-        Row(modifier = Modifier.padding(horizontal = 16.dp, vertical = 16.dp), verticalAlignment = Alignment.CenterVertically) {
-            Box(modifier = Modifier.size(44.dp).clip(RoundedCornerShape(12.dp)).background(colors.newChip), contentAlignment = Alignment.Center) {
-                Icon(icon, contentDescription = null, tint = Primary, modifier = Modifier.size(22.dp))
-            }
-            Spacer(modifier = Modifier.width(12.dp))
-            Column(modifier = Modifier.weight(1f)) {
-                Text(title, fontWeight = FontWeight.Bold, fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Text(description, fontSize = 12.sp, color = colors.mutedText, maxLines = 2, overflow = TextOverflow.Ellipsis)
-            }
-            Icon(Icons.Filled.ChevronRight, contentDescription = null, tint = colors.mutedText)
-        }
-    }
-}
+    Box(modifier = Modifier.fillMaxSize()) {
+        Icon(
+            icon,
+            contentDescription = null,
+            tint = colors.newChip.copy(alpha = if (colors.isDark) 0.5f else 0.7f),
+            modifier = Modifier
+                .size(280.dp)
+                .align(Alignment.BottomCenter)
+                .offset(y = 70.dp)
+        )
 
-// עטיפה מעוצבת סביב FolderPickerCard - אייקון גדול + טיפ, כדי שהמסך לא יראה
-// כמו כרטיס בודד צף בריק (כמו שהיה קודם).
-@Composable
-fun EmptyFolderPrompt(icon: ImageVector, title: String, description: String, tip: String, onClick: () -> Unit) {
-    val colors = LocalAppColors.current
-    Column(
-        modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
-        verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally
-    ) {
-        Box(
-            modifier = Modifier.size(84.dp).clip(CircleShape).background(colors.newChip),
-            contentAlignment = Alignment.Center
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(top = 30.dp, bottom = 24.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            Icon(icon, contentDescription = null, tint = Primary, modifier = Modifier.size(40.dp))
+            if (badge != null) {
+                Surface(shape = RoundedCornerShape(50), color = colors.newChip) {
+                    Text(
+                        badge, modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
+                        fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Primary
+                    )
+                }
+                Spacer(modifier = Modifier.height(18.dp))
+            }
+
+            Box(
+                modifier = Modifier
+                    .size(92.dp)
+                    .shadow(elevation = 10.dp, shape = CircleShape, ambientColor = Primary, spotColor = Primary)
+                    .clip(CircleShape)
+                    .background(TileGradient),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(icon, contentDescription = null, tint = Color.White, modifier = Modifier.size(42.dp))
+            }
+            Spacer(modifier = Modifier.height(20.dp))
+            Text(title, fontSize = 19.sp, fontWeight = FontWeight.ExtraBold, textAlign = TextAlign.Center)
+            Spacer(modifier = Modifier.height(6.dp))
+            Text(
+                description, fontSize = 13.sp, color = colors.mutedText, textAlign = TextAlign.Center,
+                modifier = Modifier.padding(horizontal = 36.dp)
+            )
+            Spacer(modifier = Modifier.height(24.dp))
+
+            Surface(onClick = onClick, shape = RoundedCornerShape(50), color = Primary, shadowElevation = 6.dp) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 28.dp, vertical = 14.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(Icons.Filled.FolderOpen, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(buttonLabel, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                }
+            }
+
+            if (tip != null) {
+                Spacer(modifier = Modifier.height(22.dp))
+                Surface(shape = RoundedCornerShape(14.dp), color = colors.cardBg, shadowElevation = 1.dp, modifier = Modifier.padding(horizontal = 28.dp)) {
+                    Row(modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Filled.Lightbulb, contentDescription = null, tint = colors.warnText, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(tip, fontSize = 11.sp, color = colors.mutedText)
+                    }
+                }
+            }
         }
-        Spacer(modifier = Modifier.height(18.dp))
-        FolderPickerCard(icon, title, description, onClick)
-        Spacer(modifier = Modifier.height(16.dp))
-        Text(tip, fontSize = 11.sp, color = colors.mutedText, textAlign = TextAlign.Center, modifier = Modifier.padding(horizontal = 32.dp))
     }
 }
 
@@ -1795,13 +1941,14 @@ fun scanRenameFolder(context: Context, uri: Uri, convertUnderscoreToSpace: Boole
             val baseName = if (hasExtension) name.substring(0, dotIndex) else name
             val extension = if (hasExtension) name.substring(dotIndex) else ""
 
-            // שלב 1: היפוך סביב " - " אם קיים בתבנית
+            // שלב 1: היפוך סביב " - " - רק כשיש בדיוק מפריד אחד כזה בשם.
+            // אם יש יותר ממפריד אחד (למשל "01 - אמן - שיר.mp3") אין דרך חד-משמעית
+            // להחליט מה "החלק הראשון" ומה "השני", אז מדלגים על שלב ההיפוך הזה
+            // במקום להציע שם הפוך/שגוי - שלב 2 (קו תחתון) עדיין יכול לחול בנפרד.
             var newBaseName = baseName
-            val sepIndex = baseName.indexOf(" - ")
-            if (sepIndex >= 0) {
-                val part1 = baseName.substring(0, sepIndex)
-                val part2 = baseName.substring(sepIndex + 3)
-                newBaseName = "$part2 - $part1"
+            val parts = baseName.split(" - ")
+            if (parts.size == 2) {
+                newBaseName = "${parts[1]} - ${parts[0]}"
             }
 
             // שלב 2: המרת קו תחתון לרווח (אופציונלי), רק בשם הבסיס - לא בסיומת
@@ -1914,7 +2061,15 @@ private fun resolveArtistPlacement(context: Context, rootTree: DocumentFile, let
 
     val cacheKey = artistDir.uri.toString()
     val children = artistDir.listFiles()
-    val signature = "${artistDir.lastModified()}:${children.size}"
+    // חתימה מבוססת על רשימת השמות בפועל (לא רק lastModified) - בחלק מספקי
+    // האחסון (בעיקר כרטיסי FAT32 חיצוניים) תאריך השינוי של תיקייה לא תמיד
+    // מתעדכן כששמות הקבצים בתוכה משתנים (למשל שינוי שם קובץ ללא שינוי במספרם),
+    // ואז חתימה שמבוססת רק עליו עלולה "לפספס" שינוי אמיתי. חישוב רשימת השמות
+    // כבר זול - אין צורך לקרוא תגיות אודיו בשבילו, רק listFiles() שכבר בוצע.
+    val namesSignature = children.sortedBy { it.name ?: "" }
+        .joinToString("|") { "${it.name}:${if (it.isDirectory) "d" else "f"}" }
+        .hashCode()
+    val signature = "${children.size}:$namesSignature"
 
     placementCache[cacheKey]?.let { cached ->
         if (cached.signature == signature) return cached.placement
@@ -1996,6 +2151,17 @@ private fun guessAudioMime(name: String): String {
 fun findDuplicateTargets(context: Context, rootUri: Uri, items: List<SortItem>): Set<Uri> {
     val rootTree = DocumentFile.fromTreeUri(context, rootUri) ?: return emptySet()
     val dup = mutableSetOf<Uri>()
+
+    // התנגשויות בתוך ה-batch עצמו: כמה פריטים נבחרו יחד ומתכנסים לאותו יעד בדיוק
+    // (אותה אות + אמן + מיקום + שם קובץ). בלי הבדיקה הזו, הפריט הראשון היה מועבר
+    // ונמחק מהמקור, והפריט השני היה דורס אותו בשקט בזמן הביצוע - אובדן קובץ.
+    val seenTargetKeys = mutableMapOf<String, MutableList<Uri>>()
+    items.forEach { item ->
+        val key = "${item.letter}/${item.artist}/${item.placeDirectlyInArtistFolder}/${item.fileName}"
+        seenTargetKeys.getOrPut(key) { mutableListOf() }.add(item.documentFile.uri)
+    }
+    seenTargetKeys.values.filter { it.size > 1 }.forEach { uris -> dup.addAll(uris) }
+
     items.forEach { item ->
         if (!item.willCreateFolder) {
             val letterDir = rootTree.findChildByName(item.letter)
@@ -2041,15 +2207,25 @@ fun performSort(context: Context, rootUri: Uri, items: List<SortItem>, onProgres
                 return@forEachIndexed
             }
 
-            val sourceLength = item.documentFile.length()
-
-            context.contentResolver.openInputStream(item.documentFile.uri)?.use { input ->
-                context.contentResolver.openOutputStream(newFile.uri)?.use { output -> input.copyTo(output) }
+            val input = context.contentResolver.openInputStream(item.documentFile.uri)
+            if (input == null) {
+                failures.add(FailureDetail(item.fileName, "לא ניתן לקרוא את קובץ המקור"))
+                return@forEachIndexed
             }
+            val output = context.contentResolver.openOutputStream(newFile.uri)
+            if (output == null) {
+                input.close()
+                failures.add(FailureDetail(item.fileName, "לא ניתן לכתוב לקובץ היעד"))
+                return@forEachIndexed
+            }
+            val bytesCopied = input.use { inp -> output.use { out -> inp.copyTo(out) } }
 
-            // בדיקת תקינות: משווים גודל מקור מול גודל יעד לפני מחיקת המקור
+            // בדיקת תקינות: משווים את כמות הבתים שבאמת הועתקו (לא את המטא-דאטה
+            // של גודל המקור - חלק מספקי ה-SAF מדווחים עליו כ-0 גם כשהקובץ לא
+            // ריק, מה שהיה גורם לבדיקה הישנה להתעלם ממנו לגמרי) מול גודל קובץ
+            // היעד בפועל - כך גם קובץ מקור ריק באמת מאומת כראוי.
             val destLength = newFile.length()
-            if (sourceLength > 0 && destLength != sourceLength) {
+            if (destLength != bytesCopied) {
                 failures.add(FailureDetail(item.fileName, "אימות תקינות נכשל - הגדלים אינם תואמים"))
                 return@forEachIndexed
             }
@@ -2086,9 +2262,23 @@ fun undoMove(context: Context, record: MoveRecord): Boolean {
         val movedFile = record.destinationDir.findChildByName(record.fileName) ?: return false
         val mime = guessAudioMime(record.fileName)
         val restored = parent.findChildByName(record.originalName) ?: parent.createFile(mime, record.originalName) ?: return false
-        context.contentResolver.openInputStream(movedFile.uri)?.use { input ->
-            context.contentResolver.openOutputStream(restored.uri)?.use { output -> input.copyTo(output) }
+
+        val input = context.contentResolver.openInputStream(movedFile.uri) ?: return false
+        val output = context.contentResolver.openOutputStream(restored.uri)
+        if (output == null) {
+            input.close()
+            return false
         }
+        val bytesCopied = input.use { inp -> output.use { out -> inp.copyTo(out) } }
+
+        // בדיקת תקינות לפני מחיקה - משווים את כמות הבתים שבאמת הועתקו (ולא
+        // מטא-דאטה של גודל המקור, שעלולה לדווח 0 גם כשהקובץ לא ריק) מול גודל
+        // היעד בפועל, בדיוק כמו בביצוע המקורי (performSort).
+        val restoredLength = restored.length()
+        if (restoredLength != bytesCopied) {
+            return false
+        }
+
         movedFile.delete()
         true
     } catch (e: Exception) {
