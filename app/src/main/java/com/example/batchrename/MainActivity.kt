@@ -18,10 +18,17 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
@@ -442,6 +449,7 @@ fun BatchRenameScreen(initialModeExtra: MutableState<String?>, themeModeState: M
     var renameStatusText by remember { mutableStateOf("") }
     var renameStatusOk by remember { mutableStateOf(true) }
     var renameQuery by remember { mutableStateOf("") }
+    var underscoreToSpace by remember { mutableStateOf(false) }
     var renameProgress by remember { mutableStateOf(0 to 0) }
     var renameFailures by remember { mutableStateOf(listOf<FailureDetail>()) }
 
@@ -513,7 +521,7 @@ fun BatchRenameScreen(initialModeExtra: MutableState<String?>, themeModeState: M
             renameFailures = emptyList()
             scope.launch {
                 isScanningRename = true
-                val result = withContext(Dispatchers.IO) { scanRenameFolder(context, uri) }
+                val result = withContext(Dispatchers.IO) { scanRenameFolder(context, uri, underscoreToSpace) }
                 renameItems = result
                 isScanningRename = false
                 if (result.isEmpty()) { renameStatusText = "לא נמצאו קבצים בתבנית המתאימה"; renameStatusOk = false }
@@ -593,7 +601,7 @@ fun BatchRenameScreen(initialModeExtra: MutableState<String?>, themeModeState: M
 
     fun refreshRename(uri: Uri) {
         scope.launch {
-            renameItems = withContext(Dispatchers.IO) { scanRenameFolder(context, uri) }
+            renameItems = withContext(Dispatchers.IO) { scanRenameFolder(context, uri, underscoreToSpace) }
         }
     }
 
@@ -617,6 +625,13 @@ fun BatchRenameScreen(initialModeExtra: MutableState<String?>, themeModeState: M
             val root = sortRootUri
             val folder = sortFolderUri
             if (root != null && folder != null) refreshSort(folder, root, true)
+        }
+    }
+
+    // שינוי האופציה "המר קו תחתון לרווח" מרענן מיד את הרשימה אם כבר נבחרה תיקייה
+    LaunchedEffect(underscoreToSpace) {
+        if (hasRenameFolder) {
+            renameFolderUri?.let { refreshRename(it) }
         }
     }
 
@@ -923,9 +938,26 @@ fun BatchRenameScreen(initialModeExtra: MutableState<String?>, themeModeState: M
             }
         }
 
-        Column(
-            modifier = Modifier.weight(1f).padding(horizontal = 16.dp, vertical = 14.dp)
-        ) {
+        AnimatedContent(
+            targetState = mode,
+            transitionSpec = {
+                val forward = initialState == null && targetState != null
+                val backward = targetState == null && initialState != null
+                when {
+                    forward -> (slideInHorizontally(tween(260)) { w -> w / 4 } + fadeIn(tween(260))) togetherWith
+                        (slideOutHorizontally(tween(220)) { w -> -w / 6 } + fadeOut(tween(180)))
+                    backward -> (slideInHorizontally(tween(260)) { w -> -w / 4 } + fadeIn(tween(260))) togetherWith
+                        (slideOutHorizontally(tween(220)) { w -> w / 6 } + fadeOut(tween(180)))
+                    else -> fadeIn(tween(200)) togetherWith fadeOut(tween(150))
+                }
+            },
+            label = "modeTransition",
+            modifier = Modifier.weight(1f)
+        ) { targetMode ->
+            val mode = targetMode // תמונת מצב קבועה לאורך כל האנימציה הנוכחית
+            Column(
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp)
+            ) {
             when (mode) {
 
                 // ---------- מסך בית ----------
@@ -983,31 +1015,39 @@ fun BatchRenameScreen(initialModeExtra: MutableState<String?>, themeModeState: M
                             tip = "טיפ: אפשר לבחור כל תיקייה שמכילה קבצים עם מקף (\" - \") בשם שלהם",
                             onClick = { renameFolderPicker.launch(null) }
                         )
-                    } else if (isScanningRename) {
-                        ScanningAnimation("סורק קבצים בתיקייה...")
                     } else {
-                        if (renameStatusText.isNotEmpty()) StatusBanner(renameStatusText, renameStatusOk)
-                        if (renameFailures.isNotEmpty()) FailuresPanel(renameFailures)
+                        RenameOptionsRow(
+                            underscoreToSpace = underscoreToSpace,
+                            onToggle = { underscoreToSpace = it }
+                        )
+                        Spacer(modifier = Modifier.height(6.dp))
 
-                        if (renameItems.isNotEmpty()) {
-                            SelectAllRow(renameFilteredChecked, filteredRename.size, renameAllFilteredSelected) {
-                                val newValue = !renameAllFilteredSelected
-                                filteredRename.forEach { it.checked.value = newValue }
-                                haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                        if (isScanningRename) {
+                            SkeletonScanningList("סורק קבצים בתיקייה...")
+                        } else {
+                            if (renameStatusText.isNotEmpty()) StatusBanner(renameStatusText, renameStatusOk)
+                            if (renameFailures.isNotEmpty()) FailuresPanel(renameFailures)
+
+                            if (renameItems.isNotEmpty()) {
+                                SelectAllRow(renameFilteredChecked, filteredRename.size, renameAllFilteredSelected) {
+                                    val newValue = !renameAllFilteredSelected
+                                    filteredRename.forEach { it.checked.value = newValue }
+                                    haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                                }
                             }
-                        }
 
-                        Spacer(modifier = Modifier.height(4.dp))
+                            Spacer(modifier = Modifier.height(4.dp))
 
-                        when {
-                            filteredRename.isEmpty() && renameItems.isNotEmpty() -> EmptyState(Icons.Filled.SearchOff, "אין תוצאות לחיפוש")
-                            renameItems.isEmpty() -> EmptyState(Icons.Filled.SearchOff, "לא נמצאו קבצים תואמים")
-                            else -> LazyColumn(
-                                modifier = Modifier.weight(1f),
-                                verticalArrangement = Arrangement.spacedBy(6.dp),
-                                contentPadding = PaddingValues(bottom = 18.dp)
-                            ) {
-                                items(filteredRename) { item -> FileRenameCard(item, haptics) }
+                            when {
+                                filteredRename.isEmpty() && renameItems.isNotEmpty() -> EmptyState(Icons.Filled.SearchOff, "אין תוצאות לחיפוש")
+                                renameItems.isEmpty() -> EmptyState(Icons.Filled.SearchOff, "לא נמצאו קבצים תואמים")
+                                else -> LazyColumn(
+                                    modifier = Modifier.weight(1f),
+                                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                                    contentPadding = PaddingValues(bottom = 18.dp)
+                                ) {
+                                    items(filteredRename) { item -> FileRenameCard(item, haptics) }
+                                }
                             }
                         }
                     }
@@ -1047,7 +1087,7 @@ fun BatchRenameScreen(initialModeExtra: MutableState<String?>, themeModeState: M
                             )
                         }
                     } else if (isScanningSort) {
-                        ScanningAnimation("סורק שירים ובודק תגיות... (${sortProgress.first}/${sortProgress.second})")
+                        SkeletonScanningList("סורק שירים ובודק תגיות... (${sortProgress.first}/${sortProgress.second})")
                     } else {
                         if (sortStatusText.isNotEmpty()) StatusBanner(sortStatusText, sortStatusOk)
                         if (sortFailures.isNotEmpty()) FailuresPanel(sortFailures)
@@ -1094,6 +1134,7 @@ fun BatchRenameScreen(initialModeExtra: MutableState<String?>, themeModeState: M
                 AppMode.HISTORY -> {
                     HistoryScreen(context = context)
                 }
+            }
             }
         }
 
@@ -1287,6 +1328,31 @@ fun HeaderSearchField(value: String, placeholder: String, onChange: (String) -> 
     }
 }
 
+// אפשרות נוספת למצב שינוי שמות: המרת קו תחתון (_) לרווח בשם הקובץ.
+@Composable
+fun RenameOptionsRow(underscoreToSpace: Boolean, onToggle: (Boolean) -> Unit) {
+    val colors = LocalAppColors.current
+    Surface(shape = RoundedCornerShape(14.dp), color = colors.cardBg, shadowElevation = 1.dp, modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(Icons.Filled.SpaceBar, contentDescription = null, tint = if (underscoreToSpace) Primary else colors.mutedText, modifier = Modifier.size(16.dp))
+            Spacer(modifier = Modifier.width(8.dp))
+            Text(
+                "המר קו תחתון ( _ ) לרווח",
+                fontSize = 12.sp, fontWeight = FontWeight.Medium, color = if (underscoreToSpace) Primary else colors.mutedText,
+                modifier = Modifier.weight(1f)
+            )
+            Switch(
+                checked = underscoreToSpace,
+                onCheckedChange = onToggle,
+                colors = SwitchDefaults.colors(checkedThumbColor = Color.White, checkedTrackColor = Primary)
+            )
+        }
+    }
+}
+
 @Composable
 fun SelectAllRow(checkedCount: Int, total: Int, allSelected: Boolean, onToggle: () -> Unit) {
     val colors = LocalAppColors.current
@@ -1341,18 +1407,54 @@ fun EmptyState(icon: ImageVector, text: String) {
     }
 }
 
+// שורת מצב קומפקטית (אייקון מסתובב + טקסט) שמוצגת מעל רשימת השלדים בזמן סריקה.
 @Composable
-fun ScanningAnimation(text: String) {
+fun ScanningStatusRow(text: String) {
     val colors = LocalAppColors.current
-    val infiniteTransition = rememberInfiniteTransition(label = "scan")
+    val infiniteTransition = rememberInfiniteTransition(label = "scanIcon")
     val rotation by infiniteTransition.animateFloat(
         initialValue = 0f, targetValue = 360f,
         animationSpec = infiniteRepeatable(animation = tween(1100, easing = LinearEasing)), label = "rotation"
     )
-    Column(modifier = Modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
-        Icon(Icons.Filled.Autorenew, contentDescription = null, tint = Primary, modifier = Modifier.size(44.dp).graphicsLayer { rotationZ = rotation })
-        Spacer(modifier = Modifier.height(10.dp))
-        Text(text, color = colors.mutedText, fontSize = 13.sp, fontWeight = FontWeight.Medium, textAlign = TextAlign.Center)
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(bottom = 10.dp)) {
+        Icon(Icons.Filled.Autorenew, contentDescription = null, tint = Primary, modifier = Modifier.size(18.dp).graphicsLayer { rotationZ = rotation })
+        Spacer(modifier = Modifier.width(8.dp))
+        Text(text, color = colors.mutedText, fontSize = 12.sp, fontWeight = FontWeight.Medium)
+    }
+}
+
+// כרטיס "שלד" בודד - מחקה את מבנה FileRenameCard/SortCard עם מלבנים אפורים
+// פועמים, במקום ספינר יחיד באמצע המסך. נותן תחושת מהירות וקונקרטיות.
+@Composable
+fun SkeletonCard() {
+    val colors = LocalAppColors.current
+    val infiniteTransition = rememberInfiniteTransition(label = "skeletonPulse")
+    val alpha by infiniteTransition.animateFloat(
+        initialValue = 0.35f, targetValue = 0.9f,
+        animationSpec = infiniteRepeatable(animation = tween(750, easing = LinearEasing), repeatMode = RepeatMode.Reverse),
+        label = "skeletonAlpha"
+    )
+    Surface(shape = RoundedCornerShape(16.dp), color = colors.cardBg, shadowElevation = 1.dp, modifier = Modifier.fillMaxWidth()) {
+        Row(modifier = Modifier.padding(horizontal = 10.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+            Box(modifier = Modifier.size(22.dp).clip(RoundedCornerShape(5.dp)).background(colors.mutedText.copy(alpha = alpha * 0.3f)))
+            Spacer(modifier = Modifier.width(10.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Box(modifier = Modifier.fillMaxWidth(0.68f).height(11.dp).clip(RoundedCornerShape(4.dp)).background(colors.mutedText.copy(alpha = alpha * 0.25f)))
+                Spacer(modifier = Modifier.height(8.dp))
+                Box(modifier = Modifier.fillMaxWidth(0.48f).height(11.dp).clip(RoundedCornerShape(4.dp)).background(colors.mutedText.copy(alpha = alpha * 0.22f)))
+            }
+        }
+    }
+}
+
+// הרשימה המלאה שמוצגת בזמן סריקה - שורת סטטוס + כמה כרטיסי שלד.
+@Composable
+fun SkeletonScanningList(text: String) {
+    Column(modifier = Modifier.fillMaxSize()) {
+        ScanningStatusRow(text)
+        LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            items(7) { SkeletonCard() }
+        }
     }
 }
 
@@ -1680,29 +1782,36 @@ fun HistoryRow(
 
 // ==================== לוגיקת שינוי שמות ====================
 
-fun scanRenameFolder(context: Context, uri: Uri): List<RenameItem> {
+fun scanRenameFolder(context: Context, uri: Uri, convertUnderscoreToSpace: Boolean = false): List<RenameItem> {
     val tree = DocumentFile.fromTreeUri(context, uri) ?: return emptyList()
     val result = mutableListOf<RenameItem>()
 
     tree.listFiles().forEach { file ->
         if (file.isFile) {
             val name = file.name ?: return@forEach
-            if (name.contains(" - ")) {
-                val dotIndex = name.lastIndexOf('.')
-                val hasExtension = dotIndex > 0
-                val baseName = if (hasExtension) name.substring(0, dotIndex) else name
-                val extension = if (hasExtension) name.substring(dotIndex) else ""
 
-                val sepIndex = baseName.indexOf(" - ")
-                if (sepIndex >= 0) {
-                    val part1 = baseName.substring(0, sepIndex)
-                    val part2 = baseName.substring(sepIndex + 3)
-                    val newName = "$part2 - $part1$extension"
+            val dotIndex = name.lastIndexOf('.')
+            val hasExtension = dotIndex > 0
+            val baseName = if (hasExtension) name.substring(0, dotIndex) else name
+            val extension = if (hasExtension) name.substring(dotIndex) else ""
 
-                    if (newName != name) {
-                        result.add(RenameItem(file, name, newName, mutableStateOf(true)))
-                    }
-                }
+            // שלב 1: היפוך סביב " - " אם קיים בתבנית
+            var newBaseName = baseName
+            val sepIndex = baseName.indexOf(" - ")
+            if (sepIndex >= 0) {
+                val part1 = baseName.substring(0, sepIndex)
+                val part2 = baseName.substring(sepIndex + 3)
+                newBaseName = "$part2 - $part1"
+            }
+
+            // שלב 2: המרת קו תחתון לרווח (אופציונלי), רק בשם הבסיס - לא בסיומת
+            if (convertUnderscoreToSpace && newBaseName.contains('_')) {
+                newBaseName = newBaseName.replace('_', ' ')
+            }
+
+            val newName = "$newBaseName$extension"
+            if (newName != name) {
+                result.add(RenameItem(file, name, newName, mutableStateOf(true)))
             }
         }
     }
