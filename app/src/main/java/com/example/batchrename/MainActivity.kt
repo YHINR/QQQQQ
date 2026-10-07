@@ -41,7 +41,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyListScope
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -53,6 +53,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -193,6 +194,9 @@ sealed class ConfirmStep {
     data class BigBatch(val count: Int, val proceed: () -> Unit) : ConfirmStep()
     data class LowSpace(val neededMb: Long, val availMb: Long, val proceed: () -> Unit) : ConfirmStep()
     data class Duplicates(val count: Int, val onSkip: () -> Unit, val onOverwrite: () -> Unit) : ConfirmStep()
+    data class Preview(
+        val title: String, val totalFiles: Int, val duplicates: Int, val newFolders: Int, val proceed: () -> Unit
+    ) : ConfirmStep()
 }
 
 // פרט בודד בתוך רשומת היסטוריה - שומר גם טקסט לתצוגה וגם URIs לשחזור אפשרי בעתיד.
@@ -222,6 +226,9 @@ private const val PREFS_NAME = "batch_rename_prefs"
 private const val KEY_DEFAULT_ROOT = "default_root_uri"
 private const val KEY_THEME_MODE = "theme_mode"
 private const val KEY_HISTORY = "history_entries"
+private const val KEY_IGNORE_LIST = "ignore_list"
+private const val KEY_AUTO_DELETE = "auto_delete"
+private const val KEY_SAVED_ROOTS = "saved_roots"
 private const val MAX_HISTORY_ENTRIES = 25
 
 object AppPrefs {
@@ -237,6 +244,34 @@ object AppPrefs {
         prefs(context).edit().putString(KEY_THEME_MODE, mode).apply()
     }
 
+    fun getIgnoreList(context: Context): Set<String> {
+        return prefs(context).getStringSet(KEY_IGNORE_LIST, emptySet()) ?: emptySet()
+    }
+    fun setIgnoreList(context: Context, list: Set<String>) {
+        prefs(context).edit().putStringSet(KEY_IGNORE_LIST, list).apply()
+    }
+
+    fun getAutoDeleteEmpty(context: Context): Boolean = prefs(context).getBoolean(KEY_AUTO_DELETE, false)
+    fun setAutoDeleteEmpty(context: Context, value: Boolean) {
+        prefs(context).edit().putBoolean(KEY_AUTO_DELETE, value).apply()
+    }
+
+    fun getSavedRoots(context: Context): List<String> {
+        val raw = prefs(context).getString(KEY_SAVED_ROOTS, null) ?: return emptyList()
+        return try {
+            val arr = JSONArray(raw)
+            List(arr.length()) { arr.getString(it) }
+        } catch (e: Exception) { emptyList() }
+    }
+    fun addSavedRoot(context: Context, uri: String) {
+        val current = getSavedRoots(context).toMutableList()
+        if (!current.contains(uri)) {
+            current.add(uri)
+            val arr = JSONArray(current)
+            prefs(context).edit().putString(KEY_SAVED_ROOTS, arr.toString()).apply()
+        }
+    }
+
     fun getHistory(context: Context): List<HistoryEntry> {
         val raw = prefs(context).getString(KEY_HISTORY, null) ?: return emptyList()
         val arr = try {
@@ -244,8 +279,6 @@ object AppPrefs {
         } catch (e: Exception) {
             return emptyList()
         }
-        // כל רשומה (וכל פרט בתוכה) מנותחת בנפרד - רשומה אחת פגומה רק מדלגת
-        // על עצמה, ולא מוחקת את כל שאר ההיסטוריה.
         val entries = mutableListOf<HistoryEntry>()
         for (i in 0 until arr.length()) {
             try {
@@ -270,15 +303,11 @@ object AppPrefs {
                                     fileName = d.optString("fileName", null)
                                 )
                             )
-                        } catch (e: Exception) {
-                            // פרט בודד פגום - מדלגים עליו בלבד
-                        }
+                        } catch (e: Exception) { }
                     }
                 }
                 entries.add(HistoryEntry(o.getString("type"), o.getInt("count"), o.getInt("failed"), o.getLong("time"), details))
-            } catch (e: Exception) {
-                // רשומה בודדת פגומה - מדלגים עליה בלבד, לא מאבדים את כל ההיסטוריה
-            }
+            } catch (e: Exception) { }
         }
         return entries.reversed()
     }
@@ -385,14 +414,13 @@ class MainActivity : ComponentActivity() {
 fun ensureNotificationChannel(context: Context) {
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
         val mgr = context.getSystemService(NotificationManager::class.java)
-        val channel = NotificationChannel(NOTIF_CHANNEL_ID, "עדכוני פעולות", NotificationManager.IMPORTANCE_DEFAULT)
+        val channel = NotificationChannel(NOTIF_CHANNEL_ID, "עדכוני פעולות", NotificationManager.IMPORTANCE_LOW)
         channel.description = "התראות כשפעולת שינוי שמות או מיון מסתיימת"
         mgr?.createNotificationChannel(channel)
     }
 }
 
-// הופך את אייקון האפליקציה לביטמאפ עגול בצבע המותג, לשימוש כ-largeIcon בהתראה -
-// כך ההתראה נראית "של האפליקציה" ולא כמו התראת מערכת גנרית.
+// הופך את אייקון האפליקציה לביטמאפ עגול בצבע המותג, לשימוש כ-largeIcon בהתראה
 private fun brandedNotificationIcon(context: Context): android.graphics.Bitmap? {
     return try {
         val size = 128
@@ -411,7 +439,6 @@ private fun brandedNotificationIcon(context: Context): android.graphics.Bitmap? 
 }
 
 fun postCompletionNotification(context: Context, title: String, text: String) {
-    // מציגים התראה רק כשהמשתמש לא נמצא כרגע על האפליקציה.
     if (AppForegroundState.isInForeground) return
 
     if (Build.VERSION.SDK_INT >= 33 &&
@@ -432,13 +459,9 @@ fun postCompletionNotification(context: Context, title: String, text: String) {
         brandedNotificationIcon(context)?.let { builder.setLargeIcon(it) }
 
         NotificationManagerCompat.from(context).notify(System.currentTimeMillis().toInt(), builder.build())
-    } catch (e: SecurityException) {
-        // הרשאה נדחתה - מתעלמים בשקט
-    }
+    } catch (e: SecurityException) { }
 }
 
-// מסך הכניסה היחיד עכשיו הוא ה-Splash הנייטיבי של אנדרואיד (מונפש דרך
-// windowSplashScreenAnimatedIcon ב-themes.xml) - אין יותר מסך ביניים נוסף בתוך Compose.
 @Composable
 fun AppRoot(initialModeExtra: MutableState<String?>, themeModeState: MutableState<String>) {
     BatchRenameScreen(initialModeExtra, themeModeState)
@@ -451,39 +474,46 @@ fun BatchRenameScreen(initialModeExtra: MutableState<String?>, themeModeState: M
     val colors = LocalAppColors.current
     val haptics = LocalHapticFeedback.current
 
-    var mode by remember { mutableStateOf<AppMode?>(null) }
+    // שימוש ב-rememberSaveable מאפשר לשמור על המצב בעת סיבוב מסך
+    var mode by rememberSaveable { mutableStateOf<AppMode?>(null) }
 
     // ---- מצב שינוי שמות ----
     var renameItems by remember { mutableStateOf(listOf<RenameItem>()) }
-    var renameFolderUri by remember { mutableStateOf<Uri?>(null) }
-    var hasRenameFolder by remember { mutableStateOf(false) }
+    var renameFolderUriStr by rememberSaveable { mutableStateOf<String?>(null) }
+    val renameFolderUri = renameFolderUriStr?.let { try { Uri.parse(it) } catch(e:Exception){null} }
+    val hasRenameFolder = renameFolderUri != null
     var isScanningRename by remember { mutableStateOf(false) }
     var renameStatusText by remember { mutableStateOf("") }
     var renameStatusOk by remember { mutableStateOf(true) }
-    var renameQuery by remember { mutableStateOf("") }
-    var underscoreToSpace by remember { mutableStateOf(false) }
+    var renameQuery by rememberSaveable { mutableStateOf("") }
+    var underscoreToSpace by rememberSaveable { mutableStateOf(false) }
     var renameProgress by remember { mutableStateOf(0 to 0) }
     var renameFailures by remember { mutableStateOf(listOf<FailureDetail>()) }
 
     // ---- מצב מיון סינגלים ----
-    var sortRootUri by remember { mutableStateOf<Uri?>(null) }
-    var sortFolderUri by remember { mutableStateOf<Uri?>(null) }
-    var hasSortRoot by remember { mutableStateOf(false) }
-    var hasSortFolder by remember { mutableStateOf(false) }
+    var sortRootUriStr by rememberSaveable { mutableStateOf<String?>(null) }
+    val sortRootUri = sortRootUriStr?.let { try { Uri.parse(it) } catch(e:Exception){null} }
+    val hasSortRoot = sortRootUri != null
+    var sortFolderUriStr by rememberSaveable { mutableStateOf<String?>(null) }
+    val sortFolderUri = sortFolderUriStr?.let { try { Uri.parse(it) } catch(e:Exception){null} }
+    val hasSortFolder = sortFolderUri != null
     var sortItems by remember { mutableStateOf(listOf<SortItem>()) }
     var isScanningSort by remember { mutableStateOf(false) }
     var sortStatusText by remember { mutableStateOf("") }
     var sortStatusOk by remember { mutableStateOf(true) }
-    var sortQuery by remember { mutableStateOf("") }
+    var sortQuery by rememberSaveable { mutableStateOf("") }
     var sortProgress by remember { mutableStateOf(0 to 0) }
     var sortFailures by remember { mutableStateOf(listOf<FailureDetail>()) }
 
     // ---- אישור/דיאלוגים ----
     var confirmStep by remember { mutableStateOf<ConfirmStep?>(null) }
 
+    // ---- מנהל קבצים פנימי ----
+    var fileManagerTarget by rememberSaveable { mutableStateOf<String?>(null) }
+
     // ---- חיפוש בסרגל + תפריט החלפת תיקייה ----
-    var searchExpanded by remember { mutableStateOf(false) }
-    var folderMenuExpanded by remember { mutableStateOf(false) }
+    var searchExpanded by rememberSaveable { mutableStateOf(false) }
+    var folderMenuExpanded by rememberSaveable { mutableStateOf(false) }
 
     // ---- ביטול פעולה (Undo) ----
     var undoBatch by remember { mutableStateOf<UndoBatch?>(null) }
@@ -498,10 +528,6 @@ fun BatchRenameScreen(initialModeExtra: MutableState<String?>, themeModeState: M
         }
     }
 
-    // כפתור/קיצור מהמסך הראשי - קפיצה ישירה למצב מבוקש.
-    // מאפסים את הערך מיד אחרי הצריכה - אחרת לחיצה חוזרת על אותו קיצור-דרך
-    // (אותה מחרוזת "RENAME"/"SORT" בדיוק) לא הייתה מפעילה את ה-LaunchedEffect
-    // שוב, כי המפתח שלו לא היה משתנה, והקיצור היה נראה "לא עובד" בפעם השנייה.
     LaunchedEffect(initialModeExtra.value) {
         when (initialModeExtra.value) {
             "RENAME" -> mode = AppMode.RENAME
@@ -510,7 +536,6 @@ fun BatchRenameScreen(initialModeExtra: MutableState<String?>, themeModeState: M
         if (initialModeExtra.value != null) initialModeExtra.value = null
     }
 
-    // ביטול אוטומטי של Undo אחרי 6 שניות
     LaunchedEffect(undoBatch?.id) {
         if (undoBatch != null) {
             delay(6000)
@@ -518,103 +543,17 @@ fun BatchRenameScreen(initialModeExtra: MutableState<String?>, themeModeState: M
         }
     }
 
-    // כפתור חזור פיזי: אם בתוך מצב פעולה - חזור לבית. אם בבית - יציאה רגילה.
     BackHandler(enabled = mode != null) {
         mode = null
     }
 
-    val renameFolderPicker = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.OpenDocumentTree()
-    ) { uri: Uri? ->
-        if (uri != null) {
-            context.contentResolver.takePersistableUriPermission(
-                uri,
-                android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION or android.content.Intent.FLAG_GRANT_WRITE_URI_PERMISSION
-            )
-            renameFolderUri = uri
-            hasRenameFolder = true
-            renameStatusText = ""
-            renameFailures = emptyList()
-            scope.launch {
-                isScanningRename = true
-                val result = withContext(Dispatchers.IO) { scanRenameFolder(context, uri, underscoreToSpace) }
-                renameItems = result
-                isScanningRename = false
-                if (result.isEmpty()) { renameStatusText = "לא נמצאו קבצים בתבנית המתאימה"; renameStatusOk = false }
-            }
-        }
-    }
-
-    val sortRootPicker = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.OpenDocumentTree()
-    ) { uri: Uri? ->
-        if (uri != null) {
-            context.contentResolver.takePersistableUriPermission(
-                uri,
-                android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION or android.content.Intent.FLAG_GRANT_WRITE_URI_PERMISSION
-            )
-            sortRootUri = uri
-            hasSortRoot = true
-        }
-    }
-
-    val sortFolderPicker = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.OpenDocumentTree()
-    ) { uri: Uri? ->
-        if (uri != null) {
-            context.contentResolver.takePersistableUriPermission(
-                uri,
-                android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION or android.content.Intent.FLAG_GRANT_WRITE_URI_PERMISSION
-            )
-            sortFolderUri = uri
-            hasSortFolder = true
-        }
-    }
-
-    val settingsRootPicker = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.OpenDocumentTree()
-    ) { uri: Uri? ->
-        if (uri != null) {
-            context.contentResolver.takePersistableUriPermission(
-                uri,
-                android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION or android.content.Intent.FLAG_GRANT_WRITE_URI_PERMISSION
-            )
-            AppPrefs.setDefaultRoot(context, uri.toString())
-        }
-    }
-
     // אם יש תיקיית אב קבועה בהגדרות - נטען אותה אוטומטית כשנכנסים למצב מיון
     LaunchedEffect(mode) {
-        if (mode == AppMode.SORT && sortRootUri == null) {
+        if (mode == AppMode.SORT && sortRootUriStr == null) {
             val saved = AppPrefs.getDefaultRoot(context)
             if (saved != null) {
-                try {
-                    val uri = Uri.parse(saved)
-                    sortRootUri = uri
-                    hasSortRoot = true
-                } catch (e: Exception) { /* מתעלמים */ }
+                sortRootUriStr = saved
             }
-        }
-    }
-
-    // מריץ סריקה אוטומטית ברגע ששתי התיקיות (אב + מיון) נבחרו.
-    // בודקים isScanningSort כדי למנוע הרצה כפולה אם LaunchedEffect(mode) כבר
-    // הפעיל בו-זמנית סריקה מכיוון הכניסה למצב (למשל בכניסה דרך קיצור-דרך
-    // כשתיקיית אב ברירת המחדל נטענת באותו רגע).
-    LaunchedEffect(sortRootUri, sortFolderUri) {
-        val root = sortRootUri
-        val folder = sortFolderUri
-        if (root != null && folder != null && !isScanningSort) {
-            sortStatusText = ""
-            sortFailures = emptyList()
-            isScanningSort = true
-            sortProgress = 0 to 0
-            val result = withContext(Dispatchers.IO) {
-                scanSortFolder(context, folder, root) { done, total -> sortProgress = done to total }
-            }
-            sortItems = result
-            isScanningSort = false
-            if (result.isEmpty()) { sortStatusText = "לא נמצאו שירים עם התגית \"$SINGLES_WORD\""; sortStatusOk = false }
         }
     }
 
@@ -638,29 +577,44 @@ fun BatchRenameScreen(initialModeExtra: MutableState<String?>, themeModeState: M
         }
     }
 
-    // בכל כניסה חדשה למצב (למשל אחרי חזרה למסך הבית ושוב פנימה), מרעננים את
-    // הרשימה מחדש - כדי למנוע מצב שבו רואים רשימה ישנה/לא מעודכנת אחרי פעולה.
+    LaunchedEffect(sortRootUriStr, sortFolderUriStr) {
+        if (sortRootUri != null && sortFolderUri != null && !isScanningSort) {
+            sortStatusText = ""
+            sortFailures = emptyList()
+            isScanningSort = true
+            sortProgress = 0 to 0
+            val result = withContext(Dispatchers.IO) {
+                scanSortFolder(context, sortFolderUri, sortRootUri) { done, total -> sortProgress = done to total }
+            }
+            sortItems = result
+            isScanningSort = false
+            if (result.isEmpty()) { sortStatusText = "לא נמצאו שירים עם התגית \"$SINGLES_WORD\""; sortStatusOk = false }
+        }
+    }
+
     LaunchedEffect(mode) {
         if (mode == AppMode.RENAME && hasRenameFolder) {
             renameFolderUri?.let { refreshRename(it) }
         } else if (mode == AppMode.SORT && hasSortRoot && hasSortFolder) {
-            val root = sortRootUri
-            val folder = sortFolderUri
-            if (root != null && folder != null) refreshSort(folder, root, true)
+            if (sortRootUri != null && sortFolderUri != null) refreshSort(sortFolderUri, sortRootUri, true)
         }
     }
 
-    // שינוי האופציה "המר קו תחתון לרווח" מרענן מיד את הרשימה אם כבר נבחרה תיקייה
     LaunchedEffect(underscoreToSpace) {
         if (hasRenameFolder) {
             renameFolderUri?.let { refreshRename(it) }
         }
     }
 
-    // ---- ביצוע שינוי שמות בפועל ----
     fun runRename(items: List<RenameItem>) {
         scope.launch {
             var wl: PowerManager.WakeLock? = null
+            val notifManager = NotificationManagerCompat.from(context)
+            val builder = NotificationCompat.Builder(context, NOTIF_CHANNEL_ID)
+                .setSmallIcon(R.drawable.ic_launcher_foreground)
+                .setContentTitle("משנה שמות קבצים...")
+                .setOnlyAlertOnce(true)
+                .setOngoing(true)
             try {
                 val pm = context.getSystemService(Context.POWER_SERVICE) as? PowerManager
                 wl = pm?.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "BatchRename:rename")
@@ -668,7 +622,15 @@ fun BatchRenameScreen(initialModeExtra: MutableState<String?>, themeModeState: M
 
                 renameProgress = 0 to items.size
                 val result = withContext(Dispatchers.IO) {
-                    performRename(items) { done, total -> renameProgress = done to total }
+                    performRename(items) { done, total ->
+                        renameProgress = done to total
+                        if (done % 5 == 0 || done == total) {
+                            if (ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED) {
+                                builder.setProgress(total, done, false).setContentText("$done / $total")
+                                notifManager.notify(888, builder.build())
+                            }
+                        }
+                    }
                 }
                 renameFailures = result.failures
                 renameStatusOk = result.failures.isEmpty()
@@ -702,25 +664,41 @@ fun BatchRenameScreen(initialModeExtra: MutableState<String?>, themeModeState: M
                 renameFolderUri?.let { refreshRename(it) }
             } finally {
                 wl?.release()
+                notifManager.cancel(888)
             }
         }
     }
 
     fun startRenameConfirmFlow(items: List<RenameItem>) {
-        if (items.size > BIG_BATCH_THRESHOLD) {
-            confirmStep = ConfirmStep.BigBatch(items.size) {
+        val totalFiles = items.size
+        confirmStep = ConfirmStep.Preview(
+            title = "סיכום שינוי שמות",
+            totalFiles = totalFiles,
+            duplicates = 0,
+            newFolders = 0,
+            proceed = {
                 confirmStep = null
-                runRename(items)
+                if (totalFiles > BIG_BATCH_THRESHOLD) {
+                    confirmStep = ConfirmStep.BigBatch(totalFiles) {
+                        confirmStep = null
+                        runRename(items)
+                    }
+                } else {
+                    runRename(items)
+                }
             }
-        } else {
-            runRename(items)
-        }
+        )
     }
 
-    // ---- ביצוע מיון בפועל ----
     fun runSort(items: List<SortItem>, root: Uri, folder: Uri) {
         scope.launch {
             var wl: PowerManager.WakeLock? = null
+            val notifManager = NotificationManagerCompat.from(context)
+            val builder = NotificationCompat.Builder(context, NOTIF_CHANNEL_ID)
+                .setSmallIcon(R.drawable.ic_launcher_foreground)
+                .setContentTitle("ממיין סינגלים...")
+                .setOnlyAlertOnce(true)
+                .setOngoing(true)
             try {
                 val pm = context.getSystemService(Context.POWER_SERVICE) as? PowerManager
                 wl = pm?.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "BatchRename:sort")
@@ -728,7 +706,15 @@ fun BatchRenameScreen(initialModeExtra: MutableState<String?>, themeModeState: M
 
                 sortProgress = 0 to items.size
                 val result = withContext(Dispatchers.IO) {
-                    performSort(context, root, items) { done, total -> sortProgress = done to total }
+                    performSort(context, root, items, AppPrefs.getAutoDeleteEmpty(context)) { done, total ->
+                        sortProgress = done to total
+                        if (done % 5 == 0 || done == total) {
+                            if (ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED) {
+                                builder.setProgress(total, done, false).setContentText("$done / $total")
+                                notifManager.notify(888, builder.build())
+                            }
+                        }
+                    }
                 }
                 sortFailures = result.failures
                 sortStatusOk = result.failures.isEmpty()
@@ -763,6 +749,7 @@ fun BatchRenameScreen(initialModeExtra: MutableState<String?>, themeModeState: M
                 refreshSort(folder, root, true)
             } finally {
                 wl?.release()
+                notifManager.cancel(888)
             }
         }
     }
@@ -809,13 +796,27 @@ fun BatchRenameScreen(initialModeExtra: MutableState<String?>, themeModeState: M
     }
 
     fun startSortConfirmFlow(items: List<SortItem>, root: Uri, folder: Uri) {
-        if (items.size > BIG_BATCH_THRESHOLD) {
-            confirmStep = ConfirmStep.BigBatch(items.size) {
-                confirmStep = null
-                continueAfterBigBatch(items, root, folder)
-            }
-        } else {
-            continueAfterBigBatch(items, root, folder)
+        scope.launch {
+            val newFoldersCount = items.distinctBy { it.letter + "/" + it.artist }.count { it.willCreateFolder }
+            val dupUris = withContext(Dispatchers.IO) { findDuplicateTargets(context, root, items) }
+            
+            confirmStep = ConfirmStep.Preview(
+                title = "סיכום מיון",
+                totalFiles = items.size,
+                duplicates = dupUris.size,
+                newFolders = newFoldersCount,
+                proceed = {
+                    confirmStep = null
+                    if (items.size > BIG_BATCH_THRESHOLD) {
+                        confirmStep = ConfirmStep.BigBatch(items.size) {
+                            confirmStep = null
+                            continueAfterBigBatch(items, root, folder)
+                        }
+                    } else {
+                        continueAfterBigBatch(items, root, folder)
+                    }
+                }
+            )
         }
     }
 
@@ -844,9 +845,6 @@ fun BatchRenameScreen(initialModeExtra: MutableState<String?>, themeModeState: M
     }
 
     Column(modifier = Modifier.fillMaxSize()) {
-
-        // ---------- כותרת מודרנית: פינות תחתונות מעוגלות + צל ----------
-        // כשיש רשימת תוצאות על המסך, הכותרת מצטמצמת כדי לפנות מקום לתוכן.
         val hasListShowing = (mode == AppMode.RENAME && renameItems.isNotEmpty()) || (mode == AppMode.SORT && sortItems.isNotEmpty())
         val headerVPad = if (hasListShowing && !searchExpanded) 10.dp else 16.dp
 
@@ -923,7 +921,7 @@ fun BatchRenameScreen(initialModeExtra: MutableState<String?>, themeModeState: M
                             HeaderIconButton(Icons.Filled.Search, "חיפוש") { searchExpanded = !searchExpanded }
                         }
                         if (mode == AppMode.RENAME && hasRenameFolder) {
-                            HeaderIconButton(Icons.Filled.FolderOpen, "החלף תיקייה") { renameFolderPicker.launch(null) }
+                            HeaderIconButton(Icons.Filled.FolderOpen, "החלף תיקייה") { fileManagerTarget = "RENAME" }
                         }
                         if (mode == AppMode.SORT && (hasSortRoot || hasSortFolder)) {
                             Box {
@@ -932,12 +930,12 @@ fun BatchRenameScreen(initialModeExtra: MutableState<String?>, themeModeState: M
                                     DropdownMenuItem(
                                         text = { Text("שנה תיקיית אב") },
                                         leadingIcon = { Icon(Icons.Filled.AccountTree, contentDescription = null) },
-                                        onClick = { folderMenuExpanded = false; sortRootPicker.launch(null) }
+                                        onClick = { folderMenuExpanded = false; fileManagerTarget = "SORT_ROOT" }
                                     )
                                     DropdownMenuItem(
                                         text = { Text("שנה תיקיית מיון") },
                                         leadingIcon = { Icon(Icons.Filled.FolderOpen, contentDescription = null) },
-                                        onClick = { folderMenuExpanded = false; sortFolderPicker.launch(null) }
+                                        onClick = { folderMenuExpanded = false; fileManagerTarget = "SORT_FOLDER" }
                                     )
                                 }
                             }
@@ -945,7 +943,6 @@ fun BatchRenameScreen(initialModeExtra: MutableState<String?>, themeModeState: M
                     }
                 }
 
-                // שורת חיפוש מורחבת בתוך הכותרת עצמה - נפתחת/נסגרת בלחיצה על כפתור החיפוש
                 AnimatedVisibility(visible = searchExpanded) {
                     Column {
                         Spacer(modifier = Modifier.height(10.dp))
@@ -976,20 +973,16 @@ fun BatchRenameScreen(initialModeExtra: MutableState<String?>, themeModeState: M
             label = "modeTransition",
             modifier = Modifier.weight(1f)
         ) { targetMode ->
-            val currentMode = targetMode // תמונת מצב קבועה לאורך כל האנימציה הנוכחית
+            val currentMode = targetMode
             Column(
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp)
             ) {
             when (currentMode) {
-
-                // ---------- מסך בית ----------
                 null -> {
                     val recentHistory = remember(currentMode) { AppPrefs.getHistory(context).take(2) }
                     val homeDateFormat = remember { SimpleDateFormat("dd/MM HH:mm", Locale("he")) }
 
                     Box(modifier = Modifier.fillMaxSize()) {
-                        // קישוט רקע עדין שממלא את השטח הפנוי למטה, כדי שהמסך לא
-                        // יישאר עם שטח ריק גדול מתחת לתוכן במסכים גבוהים.
                         Icon(
                             Icons.Filled.AutoAwesome,
                             contentDescription = null,
@@ -1016,6 +1009,8 @@ fun BatchRenameScreen(initialModeExtra: MutableState<String?>, themeModeState: M
                                     Text("בחר פעולה כדי להתחיל", fontSize = 12.sp, color = colors.mutedText)
                                 }
                             }
+                            Spacer(modifier = Modifier.height(16.dp))
+                            StorageStatsCard()
 
                             Spacer(modifier = Modifier.height(28.dp))
                             Text("פעולות זמינות", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = colors.mutedText)
@@ -1105,13 +1100,11 @@ fun BatchRenameScreen(initialModeExtra: MutableState<String?>, themeModeState: M
                                     }
                                 }
                             }
-
                             Spacer(modifier = Modifier.height(24.dp))
                         }
                     }
                 }
 
-                // ---------- מצב שינוי שמות ----------
                 AppMode.RENAME -> {
                     if (!hasRenameFolder) {
                         EmptyFolderPrompt(
@@ -1119,7 +1112,7 @@ fun BatchRenameScreen(initialModeExtra: MutableState<String?>, themeModeState: M
                             title = "בחר תיקייה",
                             description = "בחר את התיקייה שבה נמצאים הקבצים לשינוי שם",
                             tip = "אפשר לבחור כל תיקייה שמכילה קבצים עם מקף (\" - \") בשם שלהם",
-                            onClick = { renameFolderPicker.launch(null) }
+                            onClick = { fileManagerTarget = "RENAME" }
                         )
                     } else {
                         RenameOptionsRow(
@@ -1141,12 +1134,11 @@ fun BatchRenameScreen(initialModeExtra: MutableState<String?>, themeModeState: M
                                     haptics.performHapticFeedback(HapticFeedbackType.LongPress)
                                 }
                             }
-
                             Spacer(modifier = Modifier.height(4.dp))
 
                             when {
                                 filteredRename.isEmpty() && renameItems.isNotEmpty() -> EmptyState(Icons.Filled.SearchOff, "אין תוצאות לחיפוש")
-                                renameItems.isEmpty() -> EmptyState(Icons.Filled.SearchOff, "לא נמצאו קבצים תואמים")
+                                renameItems.isEmpty() -> EmptyState(Icons.Filled.SearchOff, "לא נמצאו קבצים תואמים (לאחר סינון חריגים)")
                                 else -> LazyColumn(
                                     modifier = Modifier.weight(1f),
                                     verticalArrangement = Arrangement.spacedBy(6.dp),
@@ -1159,7 +1151,6 @@ fun BatchRenameScreen(initialModeExtra: MutableState<String?>, themeModeState: M
                     }
                 }
 
-                // ---------- מצב מיון סינגלים ----------
                 AppMode.SORT -> {
                     if (!hasSortRoot || !hasSortFolder) {
                         if (!hasSortRoot) {
@@ -1170,7 +1161,7 @@ fun BatchRenameScreen(initialModeExtra: MutableState<String?>, themeModeState: M
                                 buttonLabel = "בחר תיקיית אב",
                                 tip = "תיקיית האב היא זו שבה כבר יש תיקיות לפי אותיות (א, ב, ג...) ובתוכן תיקיות האמנים",
                                 badge = "שלב 1 מתוך 2",
-                                onClick = { sortRootPicker.launch(null) }
+                                onClick = { fileManagerTarget = "SORT_ROOT" }
                             )
                         } else {
                             EmptyFolderPrompt(
@@ -1180,7 +1171,7 @@ fun BatchRenameScreen(initialModeExtra: MutableState<String?>, themeModeState: M
                                 buttonLabel = "בחר תיקיית מיון",
                                 tip = "אפשר לבחור כל תיקייה עם שירים שיש בתגיות שלהם את המילה \"$SINGLES_WORD\"",
                                 badge = "שלב 2 מתוך 2",
-                                onClick = { sortFolderPicker.launch(null) }
+                                onClick = { fileManagerTarget = "SORT_FOLDER" }
                             )
                         }
                     } else if (isScanningSort) {
@@ -1196,12 +1187,11 @@ fun BatchRenameScreen(initialModeExtra: MutableState<String?>, themeModeState: M
                                 haptics.performHapticFeedback(HapticFeedbackType.LongPress)
                             }
                         }
-
                         Spacer(modifier = Modifier.height(4.dp))
 
                         when {
                             filteredSort.isEmpty() && sortItems.isNotEmpty() -> EmptyState(Icons.Filled.SearchOff, "אין תוצאות לחיפוש")
-                            sortItems.isEmpty() -> EmptyState(Icons.Filled.SearchOff, "לא נמצאו שירים עם התגית \"$SINGLES_WORD\"")
+                            sortItems.isEmpty() -> EmptyState(Icons.Filled.SearchOff, "לא נמצאו שירים עם התגית \"$SINGLES_WORD\" (לאחר סינון חריגים)")
                             else -> LazyColumn(
                                 modifier = Modifier.weight(1f),
                                 verticalArrangement = Arrangement.spacedBy(6.dp),
@@ -1218,16 +1208,14 @@ fun BatchRenameScreen(initialModeExtra: MutableState<String?>, themeModeState: M
                     }
                 }
 
-                // ---------- מסך הגדרות ----------
                 AppMode.SETTINGS -> {
                     SettingsScreen(
                         context = context,
                         themeModeState = themeModeState,
-                        onPickDefaultRoot = { settingsRootPicker.launch(null) }
+                        onPickDefaultRoot = { fileManagerTarget = "DEFAULT_ROOT" }
                     )
                 }
 
-                // ---------- מסך היסטוריה ----------
                 AppMode.HISTORY -> {
                     HistoryScreen(context = context)
                 }
@@ -1235,7 +1223,6 @@ fun BatchRenameScreen(initialModeExtra: MutableState<String?>, themeModeState: M
             }
         }
 
-        // ---------- שורת ביטול (Undo) ----------
         AnimatedVisibility(visible = undoBatch != null) {
             val batch = undoBatch
             if (batch != null) {
@@ -1262,7 +1249,6 @@ fun BatchRenameScreen(initialModeExtra: MutableState<String?>, themeModeState: M
             }
         }
 
-        // ---------- כפתור תחתון ----------
         val showConfirm = when (mode) {
             AppMode.RENAME -> hasRenameFolder && renameItems.isNotEmpty()
             AppMode.SORT -> hasSortRoot && hasSortFolder && sortItems.isNotEmpty()
@@ -1287,10 +1273,26 @@ fun BatchRenameScreen(initialModeExtra: MutableState<String?>, themeModeState: M
         }
     }
 
-    // ---------- דיאלוגי אישור (מנת גודל / שטח פנוי / כפילויות) ----------
+    if (fileManagerTarget != null) {
+        InAppFileManagerDialog(
+            context = context,
+            onDismiss = { fileManagerTarget = null },
+            onSelect = { selectedUri ->
+                when (fileManagerTarget) {
+                    "RENAME" -> renameFolderUriStr = selectedUri.toString()
+                    "SORT_ROOT" -> sortRootUriStr = selectedUri.toString()
+                    "SORT_FOLDER" -> sortFolderUriStr = selectedUri.toString()
+                    "DEFAULT_ROOT" -> AppPrefs.setDefaultRoot(context, selectedUri.toString())
+                }
+                fileManagerTarget = null
+            }
+        )
+    }
+
     val step = confirmStep
     if (step != null) {
         when (step) {
+            is ConfirmStep.Preview -> PreviewDashboardDialog(step) { confirmStep = null }
             is ConfirmStep.BigBatch -> AlertDialog(
                 onDismissRequest = { confirmStep = null },
                 title = { Text("פעולה על כמות גדולה") },
@@ -1317,6 +1319,160 @@ fun BatchRenameScreen(initialModeExtra: MutableState<String?>, themeModeState: M
 }
 
 // ==================== רכיבי UI כלליים ====================
+
+@Composable
+fun StorageStatsCard() {
+    val colors = LocalAppColors.current
+    var total by remember { mutableStateOf(0L) }
+    var free by remember { mutableStateOf(0L) }
+    
+    LaunchedEffect(Unit) {
+        withContext(Dispatchers.IO) {
+            try {
+                val stat = StatFs(Environment.getExternalStorageDirectory().path)
+                total = stat.totalBytes
+                free = stat.availableBytes
+            } catch (e: Exception) {}
+        }
+    }
+    
+    if (total > 0L) {
+        val used = total - free
+        val usedPercent = (used.toFloat() / total.toFloat()).coerceIn(0f, 1f)
+        Surface(shape = RoundedCornerShape(16.dp), color = colors.cardBg, shadowElevation = 2.dp, modifier = Modifier.fillMaxWidth()) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text("אחסון במכשיר", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = colors.mutedText)
+                    Text("${free / (1024*1024*1024)}GB פנויים", fontSize = 12.sp, color = Primary, fontWeight = FontWeight.Bold)
+                }
+                Spacer(modifier = Modifier.height(10.dp))
+                Box(modifier = Modifier.fillMaxWidth().height(8.dp).clip(RoundedCornerShape(50)).background(colors.newChip)) {
+                    Box(modifier = Modifier.fillMaxWidth(usedPercent).fillMaxHeight().clip(RoundedCornerShape(50)).background(TileGradient))
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun PreviewDashboardDialog(step: ConfirmStep.Preview, onDismiss: () -> Unit) {
+    val colors = LocalAppColors.current
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(step.title, fontWeight = FontWeight.Bold) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                PreviewDetailRow(Icons.Filled.FileCopy, "סה\"כ קבצים לפעולה", "${step.totalFiles}")
+                if (step.newFolders > 0) {
+                    PreviewDetailRow(Icons.Filled.CreateNewFolder, "תיקיות חדשות שייווצרו", "${step.newFolders}", Primary)
+                }
+                if (step.duplicates > 0) {
+                    PreviewDetailRow(Icons.Filled.WarningAmber, "קבצים קיימים (כפילויות)", "${step.duplicates}", ErrorColor)
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = step.proceed) { Text("אשר ורץ") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("ביטול", color = colors.mutedText) } }
+    )
+}
+
+@Composable
+fun PreviewDetailRow(icon: ImageVector, label: String, value: String, color: Color = LocalAppColors.current.mutedText) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Icon(icon, contentDescription = null, tint = color, modifier = Modifier.size(18.dp))
+        Spacer(modifier = Modifier.width(8.dp))
+        Text(label, fontSize = 13.sp, color = LocalAppColors.current.mutedText, modifier = Modifier.weight(1f))
+        Text(value, fontSize = 14.sp, fontWeight = FontWeight.Bold, color = color)
+    }
+}
+
+@Composable
+fun InAppFileManagerDialog(context: Context, onDismiss: () -> Unit, onSelect: (Uri) -> Unit) {
+    var savedRoots by remember { mutableStateOf(AppPrefs.getSavedRoots(context)) }
+    var pathStack by remember { mutableStateOf(listOf<DocumentFile>()) }
+    val colors = LocalAppColors.current
+
+    val rootPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+        if (uri != null) {
+            context.contentResolver.takePersistableUriPermission(
+                uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION or android.content.Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+            )
+            AppPrefs.addSavedRoot(context, uri.toString())
+            savedRoots = AppPrefs.getSavedRoots(context)
+            DocumentFile.fromTreeUri(context, uri)?.let { pathStack = listOf(it) }
+        }
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Column {
+                Text("מנהל אחסון", fontWeight = FontWeight.Bold)
+                Spacer(modifier = Modifier.height(12.dp))
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    items(savedRoots) { rootStr ->
+                        val rootUri = Uri.parse(rootStr)
+                        val name = try { DocumentFile.fromTreeUri(context, rootUri)?.name ?: "אחסון" } catch (e: Exception) { "אחסון" }
+                        Surface(
+                            onClick = { DocumentFile.fromTreeUri(context, rootUri)?.let { pathStack = listOf(it) } },
+                            shape = RoundedCornerShape(12.dp),
+                            color = if (pathStack.firstOrNull()?.uri == rootUri) Primary else colors.newChip
+                        ) {
+                            Text(name, modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp), fontSize = 12.sp,
+                                color = if (pathStack.firstOrNull()?.uri == rootUri) Color.White else Primary)
+                        }
+                    }
+                    item {
+                        Surface(onClick = { rootPicker.launch(null) }, shape = RoundedCornerShape(12.dp), color = colors.cardBg, border = BorderStroke(1.dp, Primary)) {
+                            Row(modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Icon(Icons.Filled.Add, contentDescription = null, tint = Primary, modifier = Modifier.size(14.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("הוסף מקור", fontSize = 12.sp, color = Primary)
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        text = {
+            val currentDir = pathStack.lastOrNull()
+            if (savedRoots.isEmpty() && currentDir == null) {
+                Text("לא נבחרו מקורות אחסון. לחץ על 'הוסף מקור' כדי לבחור כונן פנימי, כרטיס זיכרון או USB.", color = colors.mutedText, fontSize = 13.sp)
+            } else if (currentDir != null) {
+                val folders = remember(currentDir) { currentDir.listFiles().filter { it.isDirectory }.sortedBy { it.name } }
+                Column {
+                    if (pathStack.size > 1) {
+                        Row(modifier = Modifier.fillMaxWidth().clickable { pathStack = pathStack.dropLast(1) }.padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Filled.SubdirectoryArrowRight, contentDescription = null, tint = Primary, modifier = Modifier.size(18.dp).graphicsLayer(scaleX = -1f))
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("חזור אחורה...", color = Primary, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                        }
+                        Divider(color = colors.mutedText.copy(alpha=0.2f))
+                    }
+                    LazyColumn(modifier = Modifier.weight(1f, fill = false).heightIn(max = 300.dp)) {
+                        items(folders) { folder ->
+                            Row(modifier = Modifier.fillMaxWidth().clickable { pathStack = pathStack + folder }.padding(vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Icon(Icons.Filled.Folder, contentDescription = null, tint = colors.mutedText, modifier = Modifier.size(20.dp))
+                                Spacer(modifier = Modifier.width(12.dp))
+                                Text(folder.name ?: "תיקייה", fontSize = 14.sp, color = colors.mutedText)
+                            }
+                            Divider(color = colors.mutedText.copy(alpha=0.1f))
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            val currentDir = pathStack.lastOrNull()
+            TextButton(
+                onClick = { currentDir?.let { onSelect(it.uri) } },
+                enabled = currentDir != null
+            ) { Text("בחר תיקייה זו") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("ביטול", color = colors.mutedText) } }
+    )
+}
+
 
 @Composable
 fun HeaderIconButton(icon: ImageVector, description: String, onClick: () -> Unit) {
@@ -1353,9 +1509,6 @@ fun ActionTile(
     }
 }
 
-// מסך "ריק" מעוצב מחדש: אייקון-רקע ענק ועדין ממלא את השטח הפנוי (כדי שלא
-// יישאר "שטח מת" ריק לגמרי כמו קודם), אווטאר בגרדיאנט, וכפתור פעולה בולט
-// בצורת גלולה במקום כרטיס שורה שטוח. badge אופציונלי מציג "שלב X מתוך Y".
 @Composable
 fun EmptyFolderPrompt(
     icon: ImageVector,
@@ -1439,7 +1592,6 @@ fun EmptyFolderPrompt(
     }
 }
 
-// שדה חיפוש בתוך הכותרת הסגולה - ללא גובה קבוע (מונע חיתוך טקסט), טקסט לבן על רקע שקוף.
 @Composable
 fun HeaderSearchField(value: String, placeholder: String, onChange: (String) -> Unit) {
     val focusRequester = remember { FocusRequester() }
@@ -1478,7 +1630,6 @@ fun HeaderSearchField(value: String, placeholder: String, onChange: (String) -> 
     }
 }
 
-// אפשרות נוספת למצב שינוי שמות: המרת קו תחתון (_) לרווח בשם הקובץ.
 @Composable
 fun RenameOptionsRow(underscoreToSpace: Boolean, onToggle: (Boolean) -> Unit) {
     val colors = LocalAppColors.current
@@ -1557,7 +1708,6 @@ fun EmptyState(icon: ImageVector, text: String) {
     }
 }
 
-// שורת מצב קומפקטית (אייקון מסתובב + טקסט) שמוצגת מעל רשימת השלדים בזמן סריקה.
 @Composable
 fun ScanningStatusRow(text: String) {
     val colors = LocalAppColors.current
@@ -1573,8 +1723,6 @@ fun ScanningStatusRow(text: String) {
     }
 }
 
-// כרטיס "שלד" בודד - מחקה את מבנה FileRenameCard/SortCard עם מלבנים אפורים
-// פועמים, במקום ספינר יחיד באמצע המסך. נותן תחושת מהירות וקונקרטיות.
 @Composable
 fun SkeletonCard() {
     val colors = LocalAppColors.current
@@ -1597,7 +1745,6 @@ fun SkeletonCard() {
     }
 }
 
-// הרשימה המלאה שמוצגת בזמן סריקה - שורת סטטוס + כמה כרטיסי שלד.
 @Composable
 fun SkeletonScanningList(text: String) {
     Column(modifier = Modifier.fillMaxSize()) {
@@ -1747,6 +1894,10 @@ fun SettingsScreen(context: Context, themeModeState: MutableState<String>, onPic
         }
     }
 
+    var ignoreInput by remember { mutableStateOf("") }
+    var ignoreList by remember { mutableStateOf(AppPrefs.getIgnoreList(context).toList()) }
+    var autoDelete by remember { mutableStateOf(AppPrefs.getAutoDeleteEmpty(context)) }
+
     Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
         Text("תיקיית אב קבועה", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = colors.mutedText)
         Spacer(modifier = Modifier.height(8.dp))
@@ -1764,6 +1915,68 @@ fun SettingsScreen(context: Context, themeModeState: MutableState<String>, onPic
                     Text("תיטען אוטומטית במצב מיון סינגלים", fontSize = 11.sp, color = colors.mutedText)
                 }
                 Icon(Icons.Filled.ChevronRight, contentDescription = null, tint = colors.mutedText)
+            }
+        }
+
+        Spacer(modifier = Modifier.height(24.dp))
+        Text("ניהול תיקיות", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = colors.mutedText)
+        Spacer(modifier = Modifier.height(8.dp))
+        Surface(shape = RoundedCornerShape(16.dp), color = colors.cardBg, shadowElevation = 2.dp, modifier = Modifier.fillMaxWidth()) {
+            Row(modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Filled.DeleteSweep, contentDescription = null, tint = Primary, modifier = Modifier.size(20.dp))
+                Spacer(modifier = Modifier.width(12.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("ניקוי תיקיות ריקות", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                    Text("מחיקה אוטומטית של תיקיות מקור שהתרוקנו לאחר המיון", fontSize = 11.sp, color = colors.mutedText)
+                }
+                Switch(
+                    checked = autoDelete,
+                    onCheckedChange = { autoDelete = it; AppPrefs.setAutoDeleteEmpty(context, it) },
+                    colors = SwitchDefaults.colors(checkedThumbColor = Color.White, checkedTrackColor = Primary)
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(24.dp))
+        Text("רשימת התעלמות (חריגים)", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = colors.mutedText)
+        Spacer(modifier = Modifier.height(8.dp))
+        Surface(shape = RoundedCornerShape(16.dp), color = colors.cardBg, shadowElevation = 2.dp, modifier = Modifier.fillMaxWidth()) {
+            Column(modifier = Modifier.padding(14.dp)) {
+                Text("הכנס מילות מפתח או סיומות (כמו mp4.) שהאפליקציה תתעלם מהם בסריקה:", fontSize = 12.sp, color = colors.mutedText)
+                Spacer(modifier = Modifier.height(8.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    BasicTextField(
+                        value = ignoreInput,
+                        onValueChange = { ignoreInput = it },
+                        modifier = Modifier.weight(1f).background(colors.bg, RoundedCornerShape(8.dp)).padding(10.dp),
+                        textStyle = androidx.compose.ui.text.TextStyle(color = if(colors.isDark) Color.White else Color.Black)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Button(onClick = {
+                        if (ignoreInput.isNotBlank()) {
+                            val newList = ignoreList + ignoreInput.trim()
+                            ignoreList = newList
+                            AppPrefs.setIgnoreList(context, newList.toSet())
+                            ignoreInput = ""
+                        }
+                    }, colors = ButtonDefaults.buttonColors(containerColor = Primary)) { Text("הוסף") }
+                }
+                Spacer(modifier = Modifier.height(12.dp))
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    items(ignoreList) { item ->
+                        Surface(shape = RoundedCornerShape(50), color = colors.newChip) {
+                            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)) {
+                                Text(item, fontSize = 12.sp, color = Primary)
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Icon(Icons.Filled.Close, contentDescription = null, tint = Primary, modifier = Modifier.size(14.dp).clickable {
+                                    val newList = ignoreList - item
+                                    ignoreList = newList
+                                    AppPrefs.setIgnoreList(context, newList.toSet())
+                                })
+                            }
+                        }
+                    }
+                }
             }
         }
 
@@ -1797,18 +2010,45 @@ fun HistoryScreen(context: Context) {
     val colors = LocalAppColors.current
     val scope = rememberCoroutineScope()
     var refreshKey by remember { mutableStateOf(0) }
-    val history = remember(refreshKey) { AppPrefs.getHistory(context) }
+    var historyQuery by rememberSaveable { mutableStateOf("") }
+    
+    val fullHistory = remember(refreshKey) { AppPrefs.getHistory(context) }
+    val history = remember(fullHistory, historyQuery) {
+        if (historyQuery.isBlank()) fullHistory
+        else fullHistory.filter { entry ->
+            entry.details.any { it.displayFrom.contains(historyQuery, true) || it.displayTo.contains(historyQuery, true) }
+        }
+    }
     val dateFormat = remember { SimpleDateFormat("dd/MM/yyyy HH:mm", Locale("he")) }
 
     var expandedId by remember { mutableStateOf<Long?>(null) }
     var showClearConfirm by remember { mutableStateOf(false) }
-    var restoreTarget by remember { mutableStateOf<HistoryEntry?>(null) }
+    var restoreTarget by remember { mutableStateOf<Pair<HistoryEntry, Set<Int>>?>(null) }
     var restoreResultText by remember { mutableStateOf<String?>(null) }
 
     Column(modifier = Modifier.fillMaxSize()) {
+        Surface(shape = RoundedCornerShape(12.dp), color = colors.cardBg, shadowElevation = 1.dp, modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp)) {
+            BasicTextField(
+                value = historyQuery,
+                onValueChange = { historyQuery = it },
+                modifier = Modifier.padding(12.dp),
+                textStyle = androidx.compose.ui.text.TextStyle(fontSize = 14.sp, color = if(colors.isDark) Color.White else Color.Black),
+                decorationBox = { inner ->
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Filled.Search, contentDescription = null, tint = colors.mutedText, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Box(modifier = Modifier.weight(1f)) {
+                            if (historyQuery.isEmpty()) Text("חיפוש בהיסטוריה...", color = colors.mutedText, fontSize = 14.sp)
+                            inner()
+                        }
+                    }
+                }
+            )
+        }
+
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             Text("פעולות אחרונות (עד $MAX_HISTORY_ENTRIES)", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = colors.mutedText)
-            if (history.isNotEmpty()) {
+            if (fullHistory.isNotEmpty()) {
                 TextButton(onClick = { showClearConfirm = true }) {
                     Text("נקה היסטוריה", fontSize = 12.sp, color = ErrorColor)
                 }
@@ -1821,7 +2061,7 @@ fun HistoryScreen(context: Context) {
         }
 
         if (history.isEmpty()) {
-            EmptyState(Icons.Filled.History, "אין פעולות עדיין")
+            EmptyState(Icons.Filled.History, "אין פעולות או תוצאות חיפוש")
         } else {
             LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 items(history) { entry ->
@@ -1830,7 +2070,7 @@ fun HistoryScreen(context: Context) {
                         dateFormat = dateFormat,
                         expanded = expandedId == entry.timestamp,
                         onToggleExpand = { expandedId = if (expandedId == entry.timestamp) null else entry.timestamp },
-                        onRestoreClick = { restoreTarget = entry }
+                        onRestoreClick = { selectedIndices -> restoreTarget = entry to selectedIndices }
                     )
                 }
             }
@@ -1849,17 +2089,18 @@ fun HistoryScreen(context: Context) {
         )
     }
 
-    val target = restoreTarget
-    if (target != null) {
+    val targetPair = restoreTarget
+    if (targetPair != null) {
+        val count = targetPair.second.size
         AlertDialog(
             onDismissRequest = { restoreTarget = null },
             title = { Text("שחזור פעולה") },
-            text = { Text("לשחזר את הפעולה הזו (${target.count} קבצים)? הקבצים יוחזרו למיקומם/לשמם הקודם.") },
+            text = { Text("לשחזר $count קבצים נבחרים? הם יוחזרו למיקומם/לשמם הקודם.") },
             confirmButton = {
                 TextButton(onClick = {
                     restoreTarget = null
                     scope.launch {
-                        val (ok, failed) = withContext(Dispatchers.IO) { restoreHistoryEntry(context, target) }
+                        val (ok, failed) = withContext(Dispatchers.IO) { restoreHistoryEntry(context, targetPair.first, targetPair.second) }
                         restoreResultText = "שוחזרו $ok קבצים" + if (failed > 0) ", $failed נכשלו" else ""
                     }
                 }) { Text("שחזר") }
@@ -1875,9 +2116,11 @@ fun HistoryRow(
     dateFormat: SimpleDateFormat,
     expanded: Boolean,
     onToggleExpand: () -> Unit,
-    onRestoreClick: () -> Unit
+    onRestoreClick: (Set<Int>) -> Unit
 ) {
     val colors = LocalAppColors.current
+    var selectedIndices by remember(expanded) { mutableStateOf((entry.details.indices).toSet()) }
+
     Surface(
         shape = RoundedCornerShape(14.dp), color = colors.cardBg, shadowElevation = 1.dp,
         modifier = Modifier.fillMaxWidth().animateContentSize()
@@ -1914,16 +2157,30 @@ fun HistoryRow(
 
             if (expanded && entry.details.isNotEmpty()) {
                 Spacer(modifier = Modifier.height(8.dp))
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                    Text("בחר קבצים לשחזור:", fontSize = 12.sp, color = colors.mutedText)
+                    TextButton(onClick = {
+                        selectedIndices = if (selectedIndices.size == entry.details.size) emptySet() else (entry.details.indices).toSet()
+                    }) { Text(if (selectedIndices.size == entry.details.size) "בטל הכל" else "בחר הכל", fontSize = 11.sp) }
+                }
                 Column(modifier = Modifier.padding(start = 4.dp)) {
-                    entry.details.forEach { d ->
-                        Text("• ${d.displayFrom} ← ${d.displayTo}", fontSize = 11.sp, color = colors.mutedText, modifier = Modifier.padding(vertical = 1.dp))
+                    entry.details.forEachIndexed { index, d ->
+                        Row(modifier = Modifier.fillMaxWidth().clickable {
+                            val newSet = selectedIndices.toMutableSet()
+                            if (newSet.contains(index)) newSet.remove(index) else newSet.add(index)
+                            selectedIndices = newSet
+                        }.padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Checkbox(checked = selectedIndices.contains(index), onCheckedChange = null, modifier = Modifier.scale(0.8f))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("• ${d.displayFrom} ← ${d.displayTo}", fontSize = 11.sp, color = colors.mutedText, modifier = Modifier.weight(1f))
+                        }
                     }
                 }
                 Spacer(modifier = Modifier.height(8.dp))
-                TextButton(onClick = onRestoreClick) {
-                    Icon(Icons.Filled.Undo, contentDescription = null, tint = Primary, modifier = Modifier.size(16.dp))
+                TextButton(onClick = { onRestoreClick(selectedIndices) }, enabled = selectedIndices.isNotEmpty()) {
+                    Icon(Icons.Filled.Undo, contentDescription = null, tint = if(selectedIndices.isNotEmpty()) Primary else colors.mutedText, modifier = Modifier.size(16.dp))
                     Spacer(modifier = Modifier.width(4.dp))
-                    Text("שחזר פעולה זו", color = Primary, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                    Text("שחזר נבחרים", color = if(selectedIndices.isNotEmpty()) Primary else colors.mutedText, fontWeight = FontWeight.Bold, fontSize = 12.sp)
                 }
             }
         }
@@ -1935,27 +2192,25 @@ fun HistoryRow(
 fun scanRenameFolder(context: Context, uri: Uri, convertUnderscoreToSpace: Boolean = false): List<RenameItem> {
     val tree = DocumentFile.fromTreeUri(context, uri) ?: return emptyList()
     val result = mutableListOf<RenameItem>()
+    val ignoreList = AppPrefs.getIgnoreList(context)
 
     tree.listFiles().forEach { file ->
         if (file.isFile) {
             val name = file.name ?: return@forEach
+            
+            if (ignoreList.any { ignoreItem -> name.contains(ignoreItem, ignoreCase = true) }) return@forEach
 
             val dotIndex = name.lastIndexOf('.')
             val hasExtension = dotIndex > 0
             val baseName = if (hasExtension) name.substring(0, dotIndex) else name
             val extension = if (hasExtension) name.substring(dotIndex) else ""
 
-            // שלב 1: היפוך סביב " - " - רק כשיש בדיוק מפריד אחד כזה בשם.
-            // אם יש יותר ממפריד אחד (למשל "01 - אמן - שיר.mp3") אין דרך חד-משמעית
-            // להחליט מה "החלק הראשון" ומה "השני", אז מדלגים על שלב ההיפוך הזה
-            // במקום להציע שם הפוך/שגוי - שלב 2 (קו תחתון) עדיין יכול לחול בנפרד.
             var newBaseName = baseName
             val parts = baseName.split(" - ")
             if (parts.size == 2) {
                 newBaseName = "${parts[1]} - ${parts[0]}"
             }
 
-            // שלב 2: המרת קו תחתון לרווח (אופציונלי), רק בשם הבסיס - לא בסיומת
             if (convertUnderscoreToSpace && newBaseName.contains('_')) {
                 newBaseName = newBaseName.replace('_', ' ')
             }
@@ -2028,11 +2283,8 @@ private fun extractArtistFromTags(context: Context, uri: Uri): String? {
     }
 }
 
-// מנרמל שם: מסיר רווחים כפולים/מובילים, כדי שהתאמת תיקיות תהיה עקבית
-// גם אם בתגית יש רווחים נוספים שלא נראים לעין.
 private fun normalizeName(raw: String): String = raw.trim().replace(Regex("\\s+"), " ")
 
-// מחפש תת-תיקייה לפי שם, בהתעלם מרווחים מיותרים ומרישיות.
 private fun DocumentFile.findChildByName(name: String): DocumentFile? {
     val target = normalizeName(name)
     return listFiles().firstOrNull { child ->
@@ -2041,16 +2293,7 @@ private fun DocumentFile.findChildByName(name: String): DocumentFile? {
     }
 }
 
-// מזהה אם לתיקיית האמן כבר יש תת-תיקיית "סינגלים", ואם לא - האם יש בה
-// (ישירות, לא ברקורסיה) קבצי אודיו "יתומים" שכבר מתויגים כ"סינגלים". אם כן,
-// זה סימן שהמוסכמה לאמן הזה היא לשים סינגלים ישירות בתיקייה שלו, לא בתת-תיקייה.
 private data class ArtistPlacement(val artistDir: DocumentFile?, val placeDirectly: Boolean, val willCreateFolder: Boolean)
-
-// מטמון קבוע (לא נמחק בין סריקות) לפי URI של תיקיית האמן. בכל שימוש חוזר
-// משווים "חתימה" זולה (תאריך שינוי אחרון + מספר קבצים ישירים בתיקייה) -
-// אם היא זהה לפעם הקודמת, מניחים שכלום לא השתנה חיצונית ומשתמשים בתוצאה
-// השמורה; אם היא שונה (גם אם השינוי נעשה מאפליקציה אחרת), מחשבים מחדש -
-// אבל תמיד רק עבור תיקיית האמן הספציפית הזו, לא כל תיקיית האב.
 private data class PlacementCacheEntry(val signature: String, val placement: ArtistPlacement)
 private val placementCache = java.util.concurrent.ConcurrentHashMap<String, PlacementCacheEntry>()
 
@@ -2059,17 +2302,11 @@ private fun resolveArtistPlacement(context: Context, rootTree: DocumentFile, let
     val artistDir = letterDir?.findChildByName(artist)
 
     if (artistDir == null) {
-        // אין עדיין תיקיית אמן בכלל - אין מה לשמור במטמון, תמיד תיווצר מחדש.
         return ArtistPlacement(null, placeDirectly = false, willCreateFolder = true)
     }
 
     val cacheKey = artistDir.uri.toString()
     val children = artistDir.listFiles()
-    // חתימה מבוססת על רשימת השמות בפועל (לא רק lastModified) - בחלק מספקי
-    // האחסון (בעיקר כרטיסי FAT32 חיצוניים) תאריך השינוי של תיקייה לא תמיד
-    // מתעדכן כששמות הקבצים בתוכה משתנים (למשל שינוי שם קובץ ללא שינוי במספרם),
-    // ואז חתימה שמבוססת רק עליו עלולה "לפספס" שינוי אמיתי. חישוב רשימת השמות
-    // כבר זול - אין צורך לקרוא תגיות אודיו בשבילו, רק listFiles() שכבר בוצע.
     val namesSignature = children.sortedBy { it.name ?: "" }
         .joinToString("|") { "${it.name}:${if (it.isDirectory) "d" else "f"}" }
         .hashCode()
@@ -2100,8 +2337,6 @@ private fun resolveArtistPlacement(context: Context, rootTree: DocumentFile, let
     return result
 }
 
-// סריקה מקבילית (עד 6 קבצים בו-זמנית) עם מטמון תוצאות בזיכרון.
-// סורקת אך ורק את תיקיית המיון שנבחרה - לא את כל תיקיית האב - כדי להישאר מהירה.
 suspend fun scanSortFolder(
     context: Context,
     folderUri: Uri,
@@ -2111,16 +2346,22 @@ suspend fun scanSortFolder(
 ): List<SortItem> {
     val folderTree = DocumentFile.fromTreeUri(context, folderUri) ?: return emptyList()
     val rootTree = DocumentFile.fromTreeUri(context, rootUri) ?: return emptyList()
+    val ignoreList = AppPrefs.getIgnoreList(context)
 
     val audioFiles = mutableListOf<DocumentFile>()
     collectAudioFiles(folderTree, audioFiles)
 
-    val total = audioFiles.size
+    val filteredAudioFiles = audioFiles.filter { file ->
+        val name = file.name ?: return@filter false
+        !ignoreList.any { ignoreItem -> name.contains(ignoreItem, ignoreCase = true) }
+    }
+
+    val total = filteredAudioFiles.size
     val processed = AtomicInteger(0)
     val semaphore = Semaphore(6)
 
     val results = coroutineScope {
-        audioFiles.map { file ->
+        filteredAudioFiles.map { file ->
             async(Dispatchers.IO) {
                 semaphore.withPermit {
                     val name = file.name
@@ -2156,9 +2397,6 @@ fun findDuplicateTargets(context: Context, rootUri: Uri, items: List<SortItem>):
     val rootTree = DocumentFile.fromTreeUri(context, rootUri) ?: return emptySet()
     val dup = mutableSetOf<Uri>()
 
-    // התנגשויות בתוך ה-batch עצמו: כמה פריטים נבחרו יחד ומתכנסים לאותו יעד בדיוק
-    // (אותה אות + אמן + מיקום + שם קובץ). בלי הבדיקה הזו, הפריט הראשון היה מועבר
-    // ונמחק מהמקור, והפריט השני היה דורס אותו בשקט בזמן הביצוע - אובדן קובץ.
     val seenTargetKeys = mutableMapOf<String, MutableList<Uri>>()
     items.forEach { item ->
         val key = "${item.letter}/${item.artist}/${item.placeDirectlyInArtistFolder}/${item.fileName}"
@@ -2178,7 +2416,7 @@ fun findDuplicateTargets(context: Context, rootUri: Uri, items: List<SortItem>):
     return dup
 }
 
-fun performSort(context: Context, rootUri: Uri, items: List<SortItem>, onProgress: (Int, Int) -> Unit): SortRunResult {
+fun performSort(context: Context, rootUri: Uri, items: List<SortItem>, autoDeleteEmpty: Boolean, onProgress: (Int, Int) -> Unit): SortRunResult {
     val rootTree = DocumentFile.fromTreeUri(context, rootUri)
         ?: return SortRunResult(0, items.map { FailureDetail(it.fileName, "לא ניתן לגשת לתיקיית האב") }, emptyList())
 
@@ -2225,16 +2463,8 @@ fun performSort(context: Context, rootUri: Uri, items: List<SortItem>, onProgres
             }
             val bytesCopied = input.use { inp -> output.use { out -> inp.copyTo(out) } }
 
-            // בדיקת תקינות: משווים את כמות הבתים שבאמת הועתקו (לא את המטא-דאטה
-            // של גודל המקור - חלק מספקי ה-SAF מדווחים עליו כ-0 גם כשהקובץ לא
-            // ריק, מה שהיה גורם לבדיקה הישנה להתעלם ממנו לגמרי) מול גודל קובץ
-            // היעד בפועל - כך גם קובץ מקור ריק באמת מאומת כראוי.
             val destLength = newFile.length()
             if (destLength != bytesCopied) {
-                // מוחקים את הקובץ החלקי/פגום שנוצר ביעד - לא רוצים להשאיר שם קובץ
-                // קטוע בשם הנכון שעלול להיראות כאילו ההעברה הצליחה. אם זו הייתה
-                // דריסה של קובץ שכבר היה שם, הוא כבר נפגע ב-openOutputStream (שמקצר
-                // את הקובץ בפתיחה) - אי אפשר לשחזר אותו, אבל לפחות מודיעים על כך בבירור.
                 newFile.delete()
                 val msg = if (existingAtTarget != null) {
                     "אימות תקינות נכשל - ההעתקה נקטעה (קובץ קיים ביעד נדרס ונפגע)"
@@ -2249,6 +2479,11 @@ fun performSort(context: Context, rootUri: Uri, items: List<SortItem>, onProgres
             val originalName = item.fileName
 
             item.documentFile.delete()
+            
+            if (autoDeleteEmpty && originalParent != null && originalParent.listFiles().isEmpty()) {
+                originalParent.delete()
+            }
+
             success++
             records.add(MoveRecord(targetDir, item.fileName, originalParent, originalName))
         } catch (e: Exception) {
@@ -2286,9 +2521,6 @@ fun undoMove(context: Context, record: MoveRecord): Boolean {
         }
         val bytesCopied = input.use { inp -> output.use { out -> inp.copyTo(out) } }
 
-        // בדיקת תקינות לפני מחיקה - משווים את כמות הבתים שבאמת הועתקו (ולא
-        // מטא-דאטה של גודל המקור, שעלולה לדווח 0 גם כשהקובץ לא ריק) מול גודל
-        // היעד בפועל, בדיוק כמו בביצוע המקורי (performSort).
         val restoredLength = restored.length()
         if (restoredLength != bytesCopied) {
             return false
@@ -2310,12 +2542,12 @@ fun performUndo(context: Context, batch: UndoBatch) {
     }
 }
 
-// שחזור פעולה שמורה בהיסטוריה - עובד דרך URIs שמורים, לא דורש שהאפליקציה
-// עדיין תחזיק הפניות חיות, ולכן עובד גם אחרי סגירת האפליקציה/זמן רב.
-fun restoreHistoryEntry(context: Context, entry: HistoryEntry): Pair<Int, Int> {
+fun restoreHistoryEntry(context: Context, entry: HistoryEntry, selectedIndices: Set<Int>): Pair<Int, Int> {
     var success = 0
     var failed = 0
-    entry.details.forEach { d ->
+    val toRestore = entry.details.filterIndexed { index, _ -> selectedIndices.contains(index) }
+    
+    toRestore.forEach { d ->
         val ok = try {
             when (d.kind) {
                 "rename" -> {
@@ -2332,10 +2564,6 @@ fun restoreHistoryEntry(context: Context, entry: HistoryEntry): Pair<Int, Int> {
                     val fileName = d.fileName
                     val originalName = d.originalName
                     if (destDirUri != null && originalParentUri != null && fileName != null && originalName != null) {
-                        // fromSingleUri עטף את ה-URI כקובץ בודד לקריאה בלבד (listFiles/createFile
-                        // לא נתמכים ותמיד נכשלים) - fromTreeUri כן תומך בניווט תיקייה מלא, וזה
-                        // עובד גם על URI של תת-תיקייה (לא רק שורש העץ), כי ה-URI כבר מכיל את
-                        // מזהה העץ ואת מזהה המסמך של התיקייה הספציפית הזו.
                         val destDir = DocumentFile.fromTreeUri(context, destDirUri)
                         val originalParent = DocumentFile.fromTreeUri(context, originalParentUri)
                         if (destDir != null && originalParent != null) {
