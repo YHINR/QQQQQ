@@ -954,11 +954,11 @@ fun BatchRenameScreen(initialModeExtra: MutableState<String?>, themeModeState: M
             label = "modeTransition",
             modifier = Modifier.weight(1f)
         ) { targetMode ->
-            val mode = targetMode // תמונת מצב קבועה לאורך כל האנימציה הנוכחית
+            val currentMode = targetMode // תמונת מצב קבועה לאורך כל האנימציה הנוכחית
             Column(
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp)
             ) {
-            when (mode) {
+            when (currentMode) {
 
                 // ---------- מסך בית ----------
                 null -> {
