@@ -2031,8 +2031,70 @@ fun SettingsScreen(context: Context, themeModeState: MutableState<String>, onPic
         Spacer(modifier = Modifier.height(24.dp))
         AutoCleanupSection(context)
 
+        Spacer(modifier = Modifier.height(24.dp))
+        StorageStatsSection(context)
+
         Spacer(modifier = Modifier.height(16.dp))
     }
+}
+
+// תצוגת אחסון חיה: נפח פנוי במכשיר מול הנפח הכולל, ומספר הקבצים שטופלו
+// לאחרונה (לפי ההיסטוריה השמורה) - חיווי גרפי פשוט ומהיר לקריאה.
+@Composable
+fun StorageStatsSection(context: Context) {
+    val colors = LocalAppColors.current
+    val stats = remember {
+        try {
+            val stat = StatFs(Environment.getExternalStorageDirectory().path)
+            Triple(stat.totalBytes, stat.availableBytes, stat.totalBytes - stat.availableBytes)
+        } catch (e: Exception) {
+            null
+        }
+    }
+    val historyCount = remember { AppPrefs.getHistory(context).sumOf { it.count } }
+
+    Text("אחסון במכשיר", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = colors.mutedText)
+    Spacer(modifier = Modifier.height(8.dp))
+    Surface(shape = RoundedCornerShape(16.dp), color = colors.cardBg, shadowElevation = 1.dp, modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(14.dp)) {
+            if (stats != null) {
+                val (total, available, used) = stats
+                val usedFraction = if (total > 0) (used.toFloat() / total.toFloat()).coerceIn(0f, 1f) else 0f
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Filled.Storage, contentDescription = null, tint = Primary, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        "${formatBytes(available)} פנויים מתוך ${formatBytes(total)}",
+                        fontSize = 13.sp, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f)
+                    )
+                    Text("${(usedFraction * 100).toInt()}% בשימוש", fontSize = 11.sp, color = colors.mutedText)
+                }
+                Spacer(modifier = Modifier.height(10.dp))
+                Box(
+                    modifier = Modifier.fillMaxWidth().height(8.dp).clip(RoundedCornerShape(50)).background(colors.newChip)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxHeight()
+                            .fillMaxWidth(usedFraction)
+                            .clip(RoundedCornerShape(50))
+                            .background(if (usedFraction > 0.9f) ErrorColor else Primary)
+                    )
+                }
+            } else {
+                Text("לא ניתן לקרוא נתוני אחסון", fontSize = 12.sp, color = colors.mutedText)
+            }
+            if (historyCount > 0) {
+                Spacer(modifier = Modifier.height(10.dp))
+                Text("$historyCount קבצים טופלו לאחרונה (ב-$MAX_HISTORY_ENTRIES הפעולות האחרונות)", fontSize = 11.sp, color = colors.mutedText)
+            }
+        }
+    }
+}
+
+private fun formatBytes(bytes: Long): String {
+    val gb = bytes / (1024.0 * 1024.0 * 1024.0)
+    return if (gb >= 1) String.format(Locale.US, "%.1fGB", gb) else "${bytes / (1024 * 1024)}MB"
 }
 
 // מתג "ניקוי אוטומטי של תיקיות ריקות" - אופציונלי, כבוי כברירת מחדל. כשדלוק,
@@ -2175,6 +2237,18 @@ fun HistoryScreen(context: Context) {
     // (שחזור מלא) או רק תת-קבוצה שנבחרה (שחזור פרטני).
     var restoreTarget by remember { mutableStateOf<Pair<HistoryEntry, List<HistoryDetail>>?>(null) }
     var restoreResultText by remember { mutableStateOf<String?>(null) }
+    var searchQuery by remember { mutableStateOf("") }
+
+    // חיפוש גלובלי לפי שם קובץ על פני כל הרשומות - בודק גם את שם הקובץ "לפני"
+    // וגם "אחרי" בכל פרט בתוך כל רשומה, לא רק את כותרת הרשומה עצמה.
+    val filteredHistory = remember(history, searchQuery) {
+        if (searchQuery.isBlank()) history
+        else history.filter { entry ->
+            entry.details.any { d ->
+                d.displayFrom.contains(searchQuery, ignoreCase = true) || d.displayTo.contains(searchQuery, ignoreCase = true)
+            }
+        }
+    }
 
     Column(modifier = Modifier.fillMaxSize()) {
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
@@ -2187,19 +2261,52 @@ fun HistoryScreen(context: Context) {
         }
         Spacer(modifier = Modifier.height(8.dp))
 
+        if (history.isNotEmpty()) {
+            Surface(shape = RoundedCornerShape(12.dp), color = colors.cardBg, shadowElevation = 1.dp, modifier = Modifier.fillMaxWidth()) {
+                Row(modifier = Modifier.padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Filled.Search, contentDescription = null, tint = colors.mutedText, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
+                    BasicTextField(
+                        value = searchQuery,
+                        onValueChange = { searchQuery = it },
+                        singleLine = true,
+                        textStyle = androidx.compose.ui.text.TextStyle(fontSize = 13.sp, color = if (colors.isDark) Color.White else Color.Black),
+                        cursorBrush = androidx.compose.ui.graphics.SolidColor(Primary),
+                        modifier = Modifier.weight(1f).padding(vertical = 12.dp),
+                        decorationBox = { innerTextField ->
+                            Box {
+                                if (searchQuery.isEmpty()) {
+                                    Text("חיפוש לפי שם קובץ בכל ההיסטוריה...", fontSize = 13.sp, color = colors.mutedText)
+                                }
+                                innerTextField()
+                            }
+                        }
+                    )
+                    if (searchQuery.isNotEmpty()) {
+                        IconButton(onClick = { searchQuery = "" }, modifier = Modifier.size(26.dp)) {
+                            Icon(Icons.Filled.Close, contentDescription = "נקה", tint = colors.mutedText, modifier = Modifier.size(16.dp))
+                        }
+                    }
+                }
+            }
+            Spacer(modifier = Modifier.height(8.dp))
+        }
+
         if (restoreResultText != null) {
             StatusBanner(restoreResultText!!, true)
         }
 
         if (history.isEmpty()) {
             EmptyState(Icons.Filled.History, "אין פעולות עדיין")
+        } else if (filteredHistory.isEmpty()) {
+            EmptyState(Icons.Filled.SearchOff, "אין תוצאות לחיפוש")
         } else {
             LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                items(history) { entry ->
+                items(filteredHistory) { entry ->
                     HistoryRow(
                         entry = entry,
                         dateFormat = dateFormat,
-                        expanded = expandedId == entry.timestamp,
+                        expanded = expandedId == entry.timestamp || searchQuery.isNotBlank(),
                         onToggleExpand = { expandedId = if (expandedId == entry.timestamp) null else entry.timestamp },
                         onRestoreAllClick = { restoreTarget = entry to entry.details },
                         onRestoreSelectedClick = { selected -> restoreTarget = entry to selected }
