@@ -555,10 +555,18 @@ fun BatchRenameScreen(initialModeExtra: MutableState<String?>, themeModeState: M
 
     // ---- אישור/דיאלוגים ----
     var confirmStep by remember { mutableStateOf<ConfirmStep?>(null) }
+    // תיקיות מקור שהתרוקנו לגמרי אחרי מיון - מוצגות למשתמש בדיאלוג נפרד,
+    // עם אפשרות לבחור אילו מהן למחוק (ולא מחיקה אוטומטית).
+    var emptyFolderCandidates by remember { mutableStateOf<List<DocumentFile>>(emptyList()) }
 
     // ---- חיפוש בסרגל + תפריט החלפת תיקייה ----
     var searchExpanded by remember { mutableStateOf(false) }
     var folderMenuExpanded by remember { mutableStateOf(false) }
+    // סוגר את חלונית החיפוש בכל מעבר מסך (כולל יציאה חזרה למסך הראשי) - כדי
+    // שלא תישאר פתוחה כשהיא כבר לא רלוונטית במסך החדש.
+    LaunchedEffect(mode) {
+        searchExpanded = false
+    }
 
     // ---- ביטול פעולה (Undo) ----
     var undoBatch by remember { mutableStateOf<UndoBatch?>(null) }
@@ -903,15 +911,18 @@ fun BatchRenameScreen(initialModeExtra: MutableState<String?>, themeModeState: M
                 )
                 postCompletionNotification(context, APP_NAME, "מיון סינגלים הושלם: ${result.successCount} שירים")
 
-                // ניקוי אוטומטי של תיקיות מקור שהתרוקנו - אופציונלי, לפי הגדרות.
-                // שים לב: מופעל מיד אחרי ההעברה, אז קובץ שתיקיית המקור שלו נמחקה
-                // לא יהיה ניתן לשחזור (גם לא דרך היסטוריה) - זה פשרה מודעת של
-                // האופציה הזו, ומוסברת למשתמש בטקסט שליד המתג בהגדרות.
-                if (AppPrefs.getAutoCleanupEmptyFolders(context) && result.successCount > 0) {
-                    withContext(Dispatchers.IO) {
-                        result.moveRecords.mapNotNull { it.originalParent }.distinctBy { it.uri }.forEach { parent ->
-                            cleanupEmptyParents(parent, folder)
-                        }
+                // בדיקה האם תיקיית המקור של קבצים שהועברו נותרה ריקה לגמרי -
+                // אם כן, מציעים למשתמש (ולא מוחקים אוטומטית) למחוק אותה. לעולם
+                // לא בודקים/מציעים על תיקיית המיון שנבחרה במפורש (folder).
+                if (result.successCount > 0) {
+                    val emptyNow = withContext(Dispatchers.IO) {
+                        result.moveRecords.mapNotNull { it.originalParent }
+                            .distinctBy { it.uri }
+                            .filter { it.uri != folder }
+                            .filter { parent -> try { parent.listFiles().isEmpty() } catch (e: Exception) { false } }
+                    }
+                    if (emptyNow.isNotEmpty()) {
+                        emptyFolderCandidates = emptyNow
                     }
                 }
 
@@ -1152,9 +1163,6 @@ fun BatchRenameScreen(initialModeExtra: MutableState<String?>, themeModeState: M
 
                 // ---------- מסך בית ----------
                 null -> {
-                    val recentHistory = remember(currentMode) { AppPrefs.getHistory(context).take(2) }
-                    val homeDateFormat = remember { SimpleDateFormat("dd/MM HH:mm", Locale("he")) }
-
                     Box(modifier = Modifier.fillMaxSize()) {
                         // קישוט רקע עדין שממלא את השטח הפנוי למטה, כדי שהמסך לא
                         // יישאר עם שטח ריק גדול מתחת לתוכן במסכים גבוהים.
@@ -1195,7 +1203,7 @@ fun BatchRenameScreen(initialModeExtra: MutableState<String?>, themeModeState: M
                                     title = "שינוי שמות",
                                     subtitle = "החלפת סדר בשמות קבצים",
                                     gradient = TileGradient,
-                                    modifier = Modifier.weight(1f).aspectRatio(0.95f)
+                                    modifier = Modifier.weight(1f)
                                 ) { mode = AppMode.RENAME }
 
                                 ActionTile(
@@ -1203,75 +1211,8 @@ fun BatchRenameScreen(initialModeExtra: MutableState<String?>, themeModeState: M
                                     title = "מיון סינגלים",
                                     subtitle = "מיון שירים לפי תגיות",
                                     gradient = Brush.linearGradient(listOf(Accent, Primary)),
-                                    modifier = Modifier.weight(1f).aspectRatio(0.95f)
+                                    modifier = Modifier.weight(1f)
                                 ) { mode = AppMode.SORT }
-                            }
-
-                            Spacer(modifier = Modifier.height(28.dp))
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Text("פעילות אחרונה", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = colors.mutedText)
-                                if (recentHistory.isNotEmpty()) {
-                                    TextButton(onClick = { mode = AppMode.HISTORY }) {
-                                        Text("הצג הכל", fontSize = 12.sp, color = Primary)
-                                    }
-                                }
-                            }
-                            Spacer(modifier = Modifier.height(8.dp))
-
-                            if (recentHistory.isEmpty()) {
-                                Surface(shape = RoundedCornerShape(16.dp), color = colors.cardBg, shadowElevation = 1.dp, modifier = Modifier.fillMaxWidth()) {
-                                    Row(modifier = Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                                        Icon(Icons.Filled.Lightbulb, contentDescription = null, tint = colors.warnText, modifier = Modifier.size(18.dp))
-                                        Spacer(modifier = Modifier.width(10.dp))
-                                        Text(
-                                            "פעולות שתבצע יופיעו כאן, ואפשר יהיה לבטל אותן מאוחר יותר",
-                                            fontSize = 12.sp, color = colors.mutedText, modifier = Modifier.weight(1f)
-                                        )
-                                    }
-                                }
-                            } else {
-                                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    recentHistory.forEach { entry ->
-                                        Surface(
-                                            onClick = { mode = AppMode.HISTORY },
-                                            shape = RoundedCornerShape(16.dp), color = colors.cardBg, shadowElevation = 1.dp,
-                                            modifier = Modifier.fillMaxWidth()
-                                        ) {
-                                            Row(modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-                                                Box(
-                                                    modifier = Modifier.size(34.dp).clip(CircleShape).background(colors.newChip),
-                                                    contentAlignment = Alignment.Center
-                                                ) {
-                                                    Icon(
-                                                        if (entry.type == "rename") Icons.Filled.DriveFileRenameOutline else Icons.Filled.LibraryMusic,
-                                                        contentDescription = null, tint = Primary, modifier = Modifier.size(16.dp)
-                                                    )
-                                                }
-                                                Spacer(modifier = Modifier.width(10.dp))
-                                                Column(modifier = Modifier.weight(1f)) {
-                                                    Text(
-                                                        if (entry.type == "rename") "שינוי שמות - ${entry.count} קבצים" else "מיון סינגלים - ${entry.count} שירים",
-                                                        fontSize = 13.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis
-                                                    )
-                                                    Text(homeDateFormat.format(Date(entry.timestamp)), fontSize = 11.sp, color = colors.mutedText)
-                                                }
-                                                if (entry.failedCount > 0) {
-                                                    Surface(shape = RoundedCornerShape(50), color = colors.warnChip) {
-                                                        Text(
-                                                            "${entry.failedCount} נכשלו",
-                                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
-                                                            fontSize = 10.sp, fontWeight = FontWeight.Bold, color = colors.warnText
-                                                        )
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
                             }
 
                             Spacer(modifier = Modifier.height(24.dp))
@@ -1487,6 +1428,25 @@ fun BatchRenameScreen(initialModeExtra: MutableState<String?>, themeModeState: M
             )
         }
     }
+
+    // ---------- דיאלוג "תיקיות מקור התרוקנו" (אחרי מיון) ----------
+    if (emptyFolderCandidates.isNotEmpty()) {
+        EmptyFoldersDialog(
+            folders = emptyFolderCandidates,
+            onDismiss = { emptyFolderCandidates = emptyList() },
+            onConfirmDelete = { toDelete ->
+                scope.launch {
+                    val deletedCount = withContext(Dispatchers.IO) {
+                        toDelete.count { folder -> try { folder.delete() } catch (e: Exception) { false } }
+                    }
+                    emptyFolderCandidates = emptyList()
+                    if (deletedCount > 0) {
+                        sortStatusText = sortStatusText + " · $deletedCount תיקיות ריקות נמחקו"
+                    }
+                }
+            }
+        )
+    }
 }
 
 // ==================== רכיבי UI כלליים ====================
@@ -1567,6 +1527,81 @@ private fun PreviewStatRow(icon: ImageVector, label: String, value: String, tint
     }
 }
 
+// דיאלוג שמוצג מיד אחרי מיון, רק כאשר תיקיית מקור כלשהי התרוקנה לגמרי -
+// מציע למחוק אותה (עם בחירה פרטנית), ולא מוחק שום דבר אוטומטית.
+@Composable
+fun EmptyFoldersDialog(folders: List<DocumentFile>, onDismiss: () -> Unit, onConfirmDelete: (List<DocumentFile>) -> Unit) {
+    val colors = LocalAppColors.current
+    val checkedStates = remember(folders) { folders.map { mutableStateOf(true) } }
+    val selectedCount = checkedStates.count { it.value }
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(shape = RoundedCornerShape(24.dp), color = colors.cardBg, shadowElevation = 8.dp) {
+            Column(modifier = Modifier.padding(22.dp).fillMaxWidth()) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(
+                        modifier = Modifier.size(44.dp).clip(CircleShape).background(colors.warnChip),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(Icons.Filled.FolderDelete, contentDescription = null, tint = colors.warnText, modifier = Modifier.size(22.dp))
+                    }
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Column {
+                        Text("תיקיות מקור התרוקנו", fontSize = 16.sp, fontWeight = FontWeight.ExtraBold)
+                        Text(
+                            if (folders.size == 1) "כל הקבצים הועברו ממנה" else "כל הקבצים הועברו מהן",
+                            fontSize = 12.sp, color = colors.mutedText
+                        )
+                    }
+                }
+                Spacer(modifier = Modifier.height(16.dp))
+                Text(
+                    "לא נותר בהן אף קובץ. למחוק אותן?",
+                    fontSize = 13.sp, color = colors.mutedText
+                )
+                Spacer(modifier = Modifier.height(12.dp))
+                Column(
+                    modifier = Modifier.heightIn(max = 260.dp).verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    folders.forEachIndexed { index, folder ->
+                        Surface(
+                            onClick = { checkedStates[index].value = !checkedStates[index].value },
+                            shape = RoundedCornerShape(12.dp), color = colors.newChip
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp).fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Checkbox(checked = checkedStates[index].value, onCheckedChange = { checkedStates[index].value = it })
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    folder.name ?: "תיקייה",
+                                    fontSize = 13.sp, fontWeight = FontWeight.Medium,
+                                    maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f)
+                                )
+                            }
+                        }
+                    }
+                }
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    "שים לב: קובץ שתיקיית המקור שלו נמחקה לא ניתן יהיה לשחזר יותר (גם לא דרך היסטוריה).",
+                    fontSize = 11.sp, color = colors.warnText
+                )
+                Spacer(modifier = Modifier.height(16.dp))
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                    TextButton(onClick = onDismiss) { Text("לא עכשיו") }
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Button(
+                        onClick = { onConfirmDelete(folders.filterIndexed { i, _ -> checkedStates[i].value }) },
+                        enabled = selectedCount > 0
+                    ) { Text("מחק ($selectedCount)") }
+                }
+            }
+        }
+    }
+}
+
 @Composable
 fun HeaderIconButton(icon: ImageVector, description: String, onClick: () -> Unit) {
     Box(
@@ -1589,13 +1624,21 @@ fun ActionTile(
     onClick: () -> Unit
 ) {
     val colors = LocalAppColors.current
+    // גובה נקבע לפי התוכן (ולא ריבוע קשיח) - כדי שהטקסט לעולם לא ייחתך גם
+    // בגדלי גופן גדולים יותר (הגדרות נגישות) או שמות ארוכים יותר.
     Surface(onClick = onClick, shape = RoundedCornerShape(24.dp), color = colors.cardBg, shadowElevation = 4.dp, modifier = modifier) {
-        Column(modifier = Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 18.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
             Box(modifier = Modifier.size(58.dp).clip(CircleShape).background(gradient), contentAlignment = Alignment.Center) {
                 Icon(icon, contentDescription = null, tint = Color.White, modifier = Modifier.size(28.dp))
             }
             Spacer(modifier = Modifier.height(12.dp))
-            Text(title, fontSize = 14.sp, fontWeight = FontWeight.ExtraBold, textAlign = TextAlign.Center)
+            Text(
+                title, fontSize = 14.sp, fontWeight = FontWeight.ExtraBold, textAlign = TextAlign.Center,
+                maxLines = 2, overflow = TextOverflow.Ellipsis, softWrap = true
+            )
             Spacer(modifier = Modifier.height(3.dp))
             Text(subtitle, fontSize = 11.sp, color = colors.mutedText, textAlign = TextAlign.Center, maxLines = 2, overflow = TextOverflow.Ellipsis)
         }
@@ -2097,38 +2140,22 @@ private fun formatBytes(bytes: Long): String {
     return if (gb >= 1) String.format(Locale.US, "%.1fGB", gb) else "${bytes / (1024 * 1024)}MB"
 }
 
-// מתג "ניקוי אוטומטי של תיקיות ריקות" - אופציונלי, כבוי כברירת מחדל. כשדלוק,
-// תיקיות מקור שהתרוקנו לגמרי אחרי מיון נמחקות מיד - עם האזהרה למשתמש שזה
-// פוגע ביכולת לשחזר קבצים שתיקיית המקור שלהם נמחקה.
+// הסבר קצר על ניקוי תיקיות ריקות - אין יותר מתג "אוטומטי": בכל מיון שבו
+// תיקיית מקור מתרוקנת לגמרי, האפליקציה מציעה למחוק אותה (עם בחירה פרטנית),
+// ולעולם לא מוחקת שום דבר בלי שאלה מפורשת.
 @Composable
 fun AutoCleanupSection(context: Context) {
     val colors = LocalAppColors.current
-    var enabled by remember { mutableStateOf(AppPrefs.getAutoCleanupEmptyFolders(context)) }
 
-    Text("ניקוי אוטומטי של תיקיות ריקות", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = colors.mutedText)
+    Text("ניקוי תיקיות ריקות", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = colors.mutedText)
     Spacer(modifier = Modifier.height(8.dp))
     Surface(shape = RoundedCornerShape(16.dp), color = colors.cardBg, shadowElevation = 1.dp, modifier = Modifier.fillMaxWidth()) {
-        Column(modifier = Modifier.padding(14.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Filled.FolderDelete, contentDescription = null, tint = if (enabled) Primary else colors.mutedText, modifier = Modifier.size(20.dp))
-                Spacer(modifier = Modifier.width(10.dp))
-                Text(
-                    "מחק תיקיות מקור שהתרוקנו לאחר מיון",
-                    fontSize = 13.sp, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f)
-                )
-                Switch(
-                    checked = enabled,
-                    onCheckedChange = {
-                        enabled = it
-                        AppPrefs.setAutoCleanupEmptyFolders(context, it)
-                    },
-                    colors = SwitchDefaults.colors(checkedThumbColor = Color.White, checkedTrackColor = Primary)
-                )
-            }
-            Spacer(modifier = Modifier.height(6.dp))
+        Row(modifier = Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Filled.FolderDelete, contentDescription = null, tint = colors.mutedText, modifier = Modifier.size(20.dp))
+            Spacer(modifier = Modifier.width(10.dp))
             Text(
-                "שים לב: קובץ שתיקיית המקור שלו נמחקה לא ניתן יהיה לשחזר יותר (גם לא דרך היסטוריה)",
-                fontSize = 11.sp, color = colors.warnText
+                "כשתיקיית מקור מתרוקנת לגמרי לאחר מיון, האפליקציה תציע למחוק אותה - ולעולם לא תמחק באופן אוטומטי",
+                fontSize = 12.sp, color = colors.mutedText, modifier = Modifier.weight(1f)
             )
         }
     }
