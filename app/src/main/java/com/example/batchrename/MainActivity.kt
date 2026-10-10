@@ -77,6 +77,7 @@ import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
@@ -234,7 +235,6 @@ private const val KEY_DEFAULT_ROOT = "default_root_uri"
 private const val KEY_THEME_MODE = "theme_mode"
 private const val KEY_HISTORY = "history_entries"
 private const val KEY_IGNORE_LIST = "ignore_list"
-private const val KEY_AUTO_CLEANUP = "auto_cleanup_empty_folders"
 private const val MAX_HISTORY_ENTRIES = 25
 
 object AppPrefs {
@@ -262,11 +262,6 @@ object AppPrefs {
         val arr = JSONArray()
         items.forEach { arr.put(it) }
         prefs(context).edit().putString(KEY_IGNORE_LIST, arr.toString()).apply()
-    }
-
-    fun getAutoCleanupEmptyFolders(context: Context): Boolean = prefs(context).getBoolean(KEY_AUTO_CLEANUP, false)
-    fun setAutoCleanupEmptyFolders(context: Context, value: Boolean) {
-        prefs(context).edit().putBoolean(KEY_AUTO_CLEANUP, value).apply()
     }
 
     fun getThemeMode(context: Context): String = prefs(context).getString(KEY_THEME_MODE, "system") ?: "system"
@@ -559,6 +554,11 @@ fun BatchRenameScreen(initialModeExtra: MutableState<String?>, themeModeState: M
     // עם אפשרות לבחור אילו מהן למחוק (ולא מחיקה אוטומטית).
     var emptyFolderCandidates by remember { mutableStateOf<List<DocumentFile>>(emptyList()) }
 
+    // ---- פעולה פעילה (שינוי שמות/מיון בפועל) - חוסם התחלת פעולה נוספת ----
+    var isOperationRunning by remember { mutableStateOf(false) }
+    var operationTitle by remember { mutableStateOf("") }
+    var operationProgress by remember { mutableStateOf(0 to 0) }
+
     // ---- חיפוש בסרגל + תפריט החלפת תיקייה ----
     var searchExpanded by remember { mutableStateOf(false) }
     var folderMenuExpanded by remember { mutableStateOf(false) }
@@ -746,9 +746,15 @@ fun BatchRenameScreen(initialModeExtra: MutableState<String?>, themeModeState: M
 
     // ---- ביצוע שינוי שמות בפועל ----
     fun runRename(items: List<RenameItem>) {
+        // חוסם התחלת פעולה נוספת כל עוד פעולה קודמת עדיין רצה.
+        if (isOperationRunning) return
         scope.launch {
             var wl: PowerManager.WakeLock? = null
             try {
+                isOperationRunning = true
+                operationTitle = "משנה שמות קבצים..."
+                operationProgress = 0 to items.size
+
                 val pm = context.getSystemService(Context.POWER_SERVICE) as? PowerManager
                 wl = pm?.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "BatchRename:rename")
                 wl?.acquire(5 * 60 * 1000L)
@@ -762,6 +768,7 @@ fun BatchRenameScreen(initialModeExtra: MutableState<String?>, themeModeState: M
                     if (folderUriForRun != null) {
                         performRename(context, folderUriForRun, items) { done, total ->
                             renameProgress = done to total
+                            operationProgress = done to total
                             if (done == total || done % notifyStep == 0) {
                                 postProgressNotification(context, "משנה שמות קבצים...", done, total)
                             }
@@ -804,6 +811,7 @@ fun BatchRenameScreen(initialModeExtra: MutableState<String?>, themeModeState: M
             } finally {
                 cancelProgressNotification(context)
                 wl?.release()
+                isOperationRunning = false
             }
         }
     }
@@ -863,9 +871,15 @@ fun BatchRenameScreen(initialModeExtra: MutableState<String?>, themeModeState: M
 
     // ---- ביצוע מיון בפועל ----
     fun runSort(items: List<SortItem>, root: Uri, folder: Uri) {
+        // חוסם התחלת פעולה נוספת כל עוד פעולה קודמת עדיין רצה.
+        if (isOperationRunning) return
         scope.launch {
             var wl: PowerManager.WakeLock? = null
             try {
+                isOperationRunning = true
+                operationTitle = "ממיין סינגלים..."
+                operationProgress = 0 to items.size
+
                 val pm = context.getSystemService(Context.POWER_SERVICE) as? PowerManager
                 wl = pm?.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "BatchRename:sort")
                 wl?.acquire(10 * 60 * 1000L)
@@ -875,6 +889,7 @@ fun BatchRenameScreen(initialModeExtra: MutableState<String?>, themeModeState: M
                 val result = withContext(Dispatchers.IO) {
                     performSort(context, root, items) { done, total ->
                         sortProgress = done to total
+                        operationProgress = done to total
                         if (done == total || done % notifyStep == 0) {
                             postProgressNotification(context, "ממיין סינגלים...", done, total)
                         }
@@ -930,6 +945,7 @@ fun BatchRenameScreen(initialModeExtra: MutableState<String?>, themeModeState: M
             } finally {
                 cancelProgressNotification(context)
                 wl?.release()
+                isOperationRunning = false
             }
         }
     }
@@ -1381,11 +1397,11 @@ fun BatchRenameScreen(initialModeExtra: MutableState<String?>, themeModeState: M
             Surface(shadowElevation = 12.dp, color = colors.cardBg) {
                 Box(modifier = Modifier.padding(10.dp)) {
                     if (mode == AppMode.RENAME) {
-                        ConfirmButton("אשר ורץ ($renameCheckedCount)", renameCheckedCount > 0) {
+                        ConfirmButton("אשר ורץ ($renameCheckedCount)", renameCheckedCount > 0 && !isOperationRunning) {
                             startRenameConfirmFlow(renameItems.filter { it.checked.value })
                         }
                     } else if (mode == AppMode.SORT) {
-                        ConfirmButton("אשר והעבר ($sortCheckedCount)", sortCheckedCount > 0) {
+                        ConfirmButton("אשר והעבר ($sortCheckedCount)", sortCheckedCount > 0 && !isOperationRunning) {
                             val root = sortRootUri ?: return@ConfirmButton
                             val folder = sortFolderUri ?: return@ConfirmButton
                             startSortConfirmFlow(sortItems.filter { it.checked.value }, root, folder)
@@ -1446,6 +1462,12 @@ fun BatchRenameScreen(initialModeExtra: MutableState<String?>, themeModeState: M
                 }
             }
         )
+    }
+
+    // ---------- דיאלוג "פעולה מתבצעת" - חוסם את כל המסך כל עוד שינוי שמות
+    // או מיון רצים בפועל, כדי שלא ניתן יהיה להתחיל פעולה נוספת במקביל ----
+    if (isOperationRunning) {
+        OperationProgressDialog(title = operationTitle, progress = operationProgress)
     }
 }
 
@@ -1597,6 +1619,58 @@ fun EmptyFoldersDialog(folders: List<DocumentFile>, onDismiss: () -> Unit, onCon
                         enabled = selectedCount > 0
                     ) { Text("מחק ($selectedCount)") }
                 }
+            }
+        }
+    }
+}
+
+// דיאלוג "פעולה מתבצעת" - לא ניתן לסגירה (לא בלחיצה מחוץ לו, ולא בכפתור
+// חזרה), כדי לחסום לגמרי כל אפשרות להתחיל פעולה נוספת עד שהנוכחית מסתיימת.
+@Composable
+fun OperationProgressDialog(title: String, progress: Pair<Int, Int>) {
+    val colors = LocalAppColors.current
+    val (done, total) = progress
+    val fraction = if (total > 0) done.toFloat() / total.toFloat() else 0f
+    Dialog(
+        onDismissRequest = { },
+        properties = DialogProperties(dismissOnBackPress = false, dismissOnClickOutside = false)
+    ) {
+        Surface(shape = RoundedCornerShape(24.dp), color = colors.cardBg, shadowElevation = 8.dp) {
+            Column(
+                modifier = Modifier.padding(26.dp).fillMaxWidth(),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Box(
+                    modifier = Modifier.size(56.dp).clip(CircleShape).background(TileGradient),
+                    contentAlignment = Alignment.Center
+                ) {
+                    if (total > 0) {
+                        CircularProgressIndicator(
+                            progress = { fraction },
+                            color = Color.White, strokeWidth = 3.dp, modifier = Modifier.size(32.dp)
+                        )
+                    } else {
+                        CircularProgressIndicator(color = Color.White, strokeWidth = 3.dp, modifier = Modifier.size(32.dp))
+                    }
+                }
+                Spacer(modifier = Modifier.height(16.dp))
+                Text(title, fontSize = 15.sp, fontWeight = FontWeight.ExtraBold, textAlign = TextAlign.Center)
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    if (total > 0) "$done מתוך $total" else "מתחיל...",
+                    fontSize = 12.sp, color = colors.mutedText
+                )
+                Spacer(modifier = Modifier.height(14.dp))
+                LinearProgressIndicator(
+                    progress = { fraction },
+                    modifier = Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(50)),
+                    color = Primary, trackColor = colors.newChip
+                )
+                Spacer(modifier = Modifier.height(10.dp))
+                Text(
+                    "אנא המתן עד לסיום - לא ניתן להתחיל פעולה נוספת בינתיים",
+                    fontSize = 11.sp, color = colors.mutedText, textAlign = TextAlign.Center
+                )
             }
         }
     }
@@ -2098,21 +2172,40 @@ fun StorageStatsSection(context: Context) {
 
     Text("אחסון במכשיר", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = colors.mutedText)
     Spacer(modifier = Modifier.height(8.dp))
-    Surface(shape = RoundedCornerShape(16.dp), color = colors.cardBg, shadowElevation = 1.dp, modifier = Modifier.fillMaxWidth()) {
-        Column(modifier = Modifier.padding(14.dp)) {
-            if (stats != null) {
-                val (total, available, used) = stats
-                val usedFraction = if (total > 0) (used.toFloat() / total.toFloat()).coerceIn(0f, 1f) else 0f
+
+    if (stats != null) {
+        val (total, available, used) = stats
+        val usedFraction = if (total > 0) (used.toFloat() / total.toFloat()).coerceIn(0f, 1f) else 0f
+
+        // שני כרטיסים נפרדים - "תפוס" ו"פנוי" - כדי שהמספרים יהיו ברורים
+        // במבט חטוף, ולא רק כטקסט רציף אחד ("X פנויים מתוך Y").
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            StorageStatCard(
+                icon = Icons.Filled.Storage,
+                label = "תפוס",
+                value = formatBytes(used),
+                tint = if (usedFraction > 0.9f) ErrorColor else Primary,
+                modifier = Modifier.weight(1f)
+            )
+            StorageStatCard(
+                icon = Icons.Filled.FolderOpen,
+                label = "פנוי",
+                value = formatBytes(available),
+                tint = colors.mutedText,
+                modifier = Modifier.weight(1f)
+            )
+        }
+        Spacer(modifier = Modifier.height(10.dp))
+        Surface(shape = RoundedCornerShape(16.dp), color = colors.cardBg, shadowElevation = 1.dp, modifier = Modifier.fillMaxWidth()) {
+            Column(modifier = Modifier.padding(14.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Filled.Storage, contentDescription = null, tint = Primary, modifier = Modifier.size(18.dp))
-                    Spacer(modifier = Modifier.width(8.dp))
                     Text(
-                        "${formatBytes(available)} פנויים מתוך ${formatBytes(total)}",
-                        fontSize = 13.sp, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f)
+                        "סה\"כ ${formatBytes(total)}",
+                        fontSize = 12.sp, color = colors.mutedText, modifier = Modifier.weight(1f)
                     )
                     Text("${(usedFraction * 100).toInt()}% בשימוש", fontSize = 11.sp, color = colors.mutedText)
                 }
-                Spacer(modifier = Modifier.height(10.dp))
+                Spacer(modifier = Modifier.height(8.dp))
                 Box(
                     modifier = Modifier.fillMaxWidth().height(8.dp).clip(RoundedCornerShape(50)).background(colors.newChip)
                 ) {
@@ -2124,13 +2217,34 @@ fun StorageStatsSection(context: Context) {
                             .background(if (usedFraction > 0.9f) ErrorColor else Primary)
                     )
                 }
-            } else {
-                Text("לא ניתן לקרוא נתוני אחסון", fontSize = 12.sp, color = colors.mutedText)
+                if (historyCount > 0) {
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Text("$historyCount קבצים טופלו לאחרונה (ב-$MAX_HISTORY_ENTRIES הפעולות האחרונות)", fontSize = 11.sp, color = colors.mutedText)
+                }
             }
-            if (historyCount > 0) {
-                Spacer(modifier = Modifier.height(10.dp))
-                Text("$historyCount קבצים טופלו לאחרונה (ב-$MAX_HISTORY_ENTRIES הפעולות האחרונות)", fontSize = 11.sp, color = colors.mutedText)
+        }
+    } else {
+        Surface(shape = RoundedCornerShape(16.dp), color = colors.cardBg, shadowElevation = 1.dp, modifier = Modifier.fillMaxWidth()) {
+            Text("לא ניתן לקרוא נתוני אחסון", fontSize = 12.sp, color = colors.mutedText, modifier = Modifier.padding(14.dp))
+        }
+    }
+}
+
+// כרטיס קטן אחד מתוך זוג "תפוס/פנוי" - אייקון בגרדיאנט עדין, תווית וערך.
+@Composable
+private fun StorageStatCard(icon: ImageVector, label: String, value: String, tint: Color, modifier: Modifier = Modifier) {
+    val colors = LocalAppColors.current
+    Surface(shape = RoundedCornerShape(16.dp), color = colors.cardBg, shadowElevation = 1.dp, modifier = modifier) {
+        Column(modifier = Modifier.padding(14.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(modifier = Modifier.size(28.dp).clip(CircleShape).background(colors.newChip), contentAlignment = Alignment.Center) {
+                    Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(15.dp))
+                }
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(label, fontSize = 12.sp, color = colors.mutedText)
             }
+            Spacer(modifier = Modifier.height(6.dp))
+            Text(value, fontSize = 16.sp, fontWeight = FontWeight.ExtraBold)
         }
     }
 }
@@ -2433,13 +2547,11 @@ fun HistoryRow(
             }
 
             if (expanded && entry.details.isNotEmpty()) {
-                Spacer(modifier = Modifier.height(8.dp))
+                Spacer(modifier = Modifier.height(10.dp))
 
                 if (!selectMode) {
-                    Column(modifier = Modifier.padding(start = 4.dp)) {
-                        entry.details.forEach { d ->
-                            Text("• ${d.displayFrom} ← ${d.displayTo}", fontSize = 11.sp, color = colors.mutedText, modifier = Modifier.padding(vertical = 1.dp))
-                        }
+                    Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                        entry.details.forEach { d -> HistoryDetailLine(d, colors) }
                     }
                 } else {
                     Row(
@@ -2455,24 +2567,26 @@ fun HistoryRow(
                         }
                         Text("$selectedCount / ${checkedStates.size} נבחרו", fontSize = 11.sp, color = colors.mutedText)
                     }
-                    Column(modifier = Modifier.padding(start = 4.dp)) {
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
                         entry.details.forEachIndexed { index, d ->
-                            Row(
-                                modifier = Modifier.fillMaxWidth()
-                                    .clickable { checkedStates[index].value = !checkedStates[index].value }
-                                    .padding(vertical = 2.dp),
-                                verticalAlignment = Alignment.CenterVertically
+                            Surface(
+                                onClick = { checkedStates[index].value = !checkedStates[index].value },
+                                shape = RoundedCornerShape(10.dp),
+                                color = if (checkedStates[index].value) colors.newChip else colors.bg
                             ) {
-                                Checkbox(
-                                    checked = checkedStates[index].value,
-                                    onCheckedChange = { checkedStates[index].value = it },
-                                    modifier = Modifier.size(28.dp)
-                                )
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text(
-                                    "${d.displayFrom} ← ${d.displayTo}", fontSize = 11.sp, color = colors.mutedText,
-                                    modifier = Modifier.weight(1f)
-                                )
+                                Row(
+                                    modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Checkbox(
+                                        checked = checkedStates[index].value,
+                                        onCheckedChange = { checkedStates[index].value = it },
+                                        modifier = Modifier.size(28.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(2.dp))
+                                    HistoryDetailLine(d, colors, modifier = Modifier.weight(1f))
+                                }
                             }
                         }
                     }
@@ -2512,6 +2626,33 @@ fun HistoryRow(
                     }
                 }
             }
+        }
+    }
+}
+
+// שורת פרט בודד בתוך היסטוריה - "לפני" ו"אחרי" מופרדים בבירור (שני שטחים
+// נפרדים עם רקע עדין לכל אחד, וחץ ביניהם), במקום טקסט "מ ← ל" רציף אחד
+// שקשה להבחין בו איפה נגמר השם הישן ואיפה מתחיל החדש.
+@Composable
+private fun HistoryDetailLine(d: HistoryDetail, colors: AppColors, modifier: Modifier = Modifier) {
+    Row(modifier = modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Surface(shape = RoundedCornerShape(6.dp), color = colors.bg, modifier = Modifier.weight(1f)) {
+            Text(
+                d.displayFrom, fontSize = 11.sp, color = colors.mutedText,
+                maxLines = 1, overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp)
+            )
+        }
+        Icon(
+            Icons.Filled.ArrowBack, contentDescription = null, tint = colors.mutedText,
+            modifier = Modifier.size(13.dp).padding(horizontal = 4.dp)
+        )
+        Surface(shape = RoundedCornerShape(6.dp), color = colors.newChip, modifier = Modifier.weight(1f)) {
+            Text(
+                d.displayTo, fontSize = 11.sp, color = Primary, fontWeight = FontWeight.Medium,
+                maxLines = 1, overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp)
+            )
         }
     }
 }
@@ -2842,22 +2983,6 @@ fun findDuplicateTargets(context: Context, rootUri: Uri, items: List<SortItem>):
         }
     }
     return dup
-}
-
-// מוחק תיקיות ריקות החל מ-startDir ועולה כלפי מעלה (הורה אחרי הורה), עד
-// תיקייה שאינה ריקה או עד stopAtUri (תיקיית המיון שנבחרה במפורש - לעולם לא
-// נוגעים בה, גם אם היא ריקה). עוצר גם אם מחיקה כלשהי נכשלת, כדי לא להמשיך
-// לנסות על הורה שאולי לא ריק באמת (כישלון מחיקה יכול להעיד על כך).
-fun cleanupEmptyParents(startDir: DocumentFile?, stopAtUri: Uri?) {
-    var current = startDir
-    while (current != null && current.uri != stopAtUri) {
-        val children = try { current.listFiles() } catch (e: Exception) { return }
-        if (children.isNotEmpty()) return
-        val parent = current.parentFile
-        val deleted = try { current.delete() } catch (e: Exception) { false }
-        if (!deleted) return
-        current = parent
-    }
 }
 
 fun performSort(context: Context, rootUri: Uri, items: List<SortItem>, onProgress: (Int, Int) -> Unit): SortRunResult {
