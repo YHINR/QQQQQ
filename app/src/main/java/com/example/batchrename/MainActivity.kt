@@ -1,6 +1,7 @@
 package com.example.batchrename
 
 import android.Manifest
+import android.app.ActivityManager
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Context
@@ -2114,7 +2115,7 @@ fun SettingsScreen(context: Context, themeModeState: MutableState<String>, onPic
     }
 
     Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
-        Text("תיקיית אב קבועה", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = colors.mutedText)
+        SectionHeader(Icons.Filled.AccountTree, "תיקיית אב קבועה")
         Spacer(modifier = Modifier.height(8.dp))
         Surface(onClick = onPickDefaultRoot, shape = RoundedCornerShape(16.dp), color = colors.cardBg, shadowElevation = 2.dp, modifier = Modifier.fillMaxWidth()) {
             Row(modifier = Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -2134,7 +2135,7 @@ fun SettingsScreen(context: Context, themeModeState: MutableState<String>, onPic
         }
 
         Spacer(modifier = Modifier.height(24.dp))
-        Text("ערכת נושא", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = colors.mutedText)
+        SectionHeader(Icons.Filled.Palette, "ערכת נושא")
         Spacer(modifier = Modifier.height(8.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             ThemeChip("מערכת", themeModeState.value == "system") { themeModeState.value = "system"; AppPrefs.setThemeMode(context, "system") }
@@ -2170,7 +2171,20 @@ fun StorageStatsSection(context: Context) {
     }
     val historyCount = remember { AppPrefs.getHistory(context).sumOf { it.count } }
 
-    Text("אחסון במכשיר", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = colors.mutedText)
+    // זיכרון RAM של המכשיר - אותה לוגיקה בדיוק כמו אחסון, דרך ActivityManager
+    // במקום StatFs.
+    val memStats = remember {
+        try {
+            val am = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
+            val info = ActivityManager.MemoryInfo()
+            am?.getMemoryInfo(info)
+            if (am != null) Triple(info.totalMem, info.availMem, info.totalMem - info.availMem) else null
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    SectionHeader(Icons.Filled.Storage, "אחסון במכשיר")
     Spacer(modifier = Modifier.height(8.dp))
 
     if (stats != null) {
@@ -2228,6 +2242,60 @@ fun StorageStatsSection(context: Context) {
             Text("לא ניתן לקרוא נתוני אחסון", fontSize = 12.sp, color = colors.mutedText, modifier = Modifier.padding(14.dp))
         }
     }
+
+    Spacer(modifier = Modifier.height(20.dp))
+    SectionHeader(Icons.Filled.Memory, "זיכרון (RAM)")
+    Spacer(modifier = Modifier.height(8.dp))
+
+    if (memStats != null) {
+        val (memTotal, memAvailable, memUsed) = memStats
+        val memUsedFraction = if (memTotal > 0) (memUsed.toFloat() / memTotal.toFloat()).coerceIn(0f, 1f) else 0f
+
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            StorageStatCard(
+                icon = Icons.Filled.Memory,
+                label = "בשימוש",
+                value = formatBytes(memUsed),
+                tint = if (memUsedFraction > 0.9f) ErrorColor else Primary,
+                modifier = Modifier.weight(1f)
+            )
+            StorageStatCard(
+                icon = Icons.Filled.Memory,
+                label = "פנוי",
+                value = formatBytes(memAvailable),
+                tint = colors.mutedText,
+                modifier = Modifier.weight(1f)
+            )
+        }
+        Spacer(modifier = Modifier.height(10.dp))
+        Surface(shape = RoundedCornerShape(16.dp), color = colors.cardBg, shadowElevation = 1.dp, modifier = Modifier.fillMaxWidth()) {
+            Column(modifier = Modifier.padding(14.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "סה\"כ ${formatBytes(memTotal)}",
+                        fontSize = 12.sp, color = colors.mutedText, modifier = Modifier.weight(1f)
+                    )
+                    Text("${(memUsedFraction * 100).toInt()}% בשימוש", fontSize = 11.sp, color = colors.mutedText)
+                }
+                Spacer(modifier = Modifier.height(8.dp))
+                Box(
+                    modifier = Modifier.fillMaxWidth().height(8.dp).clip(RoundedCornerShape(50)).background(colors.newChip)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxHeight()
+                            .fillMaxWidth(memUsedFraction)
+                            .clip(RoundedCornerShape(50))
+                            .background(if (memUsedFraction > 0.9f) ErrorColor else Primary)
+                    )
+                }
+            }
+        }
+    } else {
+        Surface(shape = RoundedCornerShape(16.dp), color = colors.cardBg, shadowElevation = 1.dp, modifier = Modifier.fillMaxWidth()) {
+            Text("לא ניתן לקרוא נתוני זיכרון", fontSize = 12.sp, color = colors.mutedText, modifier = Modifier.padding(14.dp))
+        }
+    }
 }
 
 // כרטיס קטן אחד מתוך זוג "תפוס/פנוי" - אייקון בגרדיאנט עדין, תווית וערך.
@@ -2261,7 +2329,7 @@ private fun formatBytes(bytes: Long): String {
 fun AutoCleanupSection(context: Context) {
     val colors = LocalAppColors.current
 
-    Text("ניקוי תיקיות ריקות", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = colors.mutedText)
+    SectionHeader(Icons.Filled.FolderDelete, "ניקוי תיקיות ריקות")
     Spacer(modifier = Modifier.height(8.dp))
     Surface(shape = RoundedCornerShape(16.dp), color = colors.cardBg, shadowElevation = 1.dp, modifier = Modifier.fillMaxWidth()) {
         Row(modifier = Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -2283,11 +2351,9 @@ fun IgnoreListSection(context: Context) {
     var items by remember { mutableStateOf(AppPrefs.getIgnoreList(context)) }
     var newPattern by remember { mutableStateOf("") }
 
-    Text("רשימת חריגים לסריקה", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = colors.mutedText)
-    Spacer(modifier = Modifier.height(4.dp))
-    Text(
-        "שמות קבצים, מילות מפתח או סיומות - קבצים שהשם שלהם מכיל אחד מאלה תמיד ידולגו בסריקה",
-        fontSize = 11.sp, color = colors.mutedText
+    SectionHeader(
+        Icons.Filled.FilterAltOff, "רשימת חריגים לסריקה",
+        "שמות קבצים, מילות מפתח או סיומות - קבצים שהשם שלהם מכיל אחד מאלה תמיד ידולגו בסריקה"
     )
     Spacer(modifier = Modifier.height(10.dp))
 
@@ -2349,6 +2415,24 @@ fun IgnoreListSection(context: Context) {
                 }
             }
         }
+    }
+}
+
+// כותרת אחידה לכל סקשן במסך ההגדרות - אייקון בעיגול קטן + כותרת, ותת-כותרת
+// אופציונלית. כך כל הסקשנים נראים כמו "אותה שפה", ולא כל אחד מעוצב קצת אחרת.
+@Composable
+fun SectionHeader(icon: ImageVector, title: String, description: String? = null) {
+    val colors = LocalAppColors.current
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Box(modifier = Modifier.size(22.dp).clip(CircleShape).background(colors.newChip), contentAlignment = Alignment.Center) {
+            Icon(icon, contentDescription = null, tint = Primary, modifier = Modifier.size(12.dp))
+        }
+        Spacer(modifier = Modifier.width(8.dp))
+        Text(title, fontSize = 13.sp, fontWeight = FontWeight.Bold, color = colors.mutedText)
+    }
+    if (description != null) {
+        Spacer(modifier = Modifier.height(4.dp))
+        Text(description, fontSize = 11.sp, color = colors.mutedText, modifier = Modifier.padding(start = 30.dp))
     }
 }
 
