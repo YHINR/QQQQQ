@@ -1,7 +1,6 @@
 package com.example.batchrename
 
 import android.Manifest
-import android.app.ActivityManager
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Context
@@ -2171,14 +2170,19 @@ fun StorageStatsSection(context: Context) {
     }
     val historyCount = remember { AppPrefs.getHistory(context).sumOf { it.count } }
 
-    // זיכרון RAM של המכשיר - אותה לוגיקה בדיוק כמו אחסון, דרך ActivityManager
-    // במקום StatFs.
-    val memStats = remember {
+    // כרטיס זיכרון חיצוני (microSD) - אם קיים כזה במכשיר. getExternalFilesDirs
+    // מחזיר את כל כרטיסי האחסון החיצוניים (אינדקס 0 הוא תמיד האחסון הפנימי
+    // המשותף), ו-isExternalStorageRemovable מזהה איזה מהם בפועל כרטיס נשלף.
+    val sdStats = remember {
         try {
-            val am = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
-            val info = ActivityManager.MemoryInfo()
-            am?.getMemoryInfo(info)
-            if (am != null) Triple(info.totalMem, info.availMem, info.totalMem - info.availMem) else null
+            context.getExternalFilesDirs(null)
+                .drop(1)
+                .filterNotNull()
+                .firstOrNull { dir -> try { Environment.isExternalStorageRemovable(dir) } catch (e: Exception) { false } }
+                ?.let { dir ->
+                    val stat = StatFs(dir.path)
+                    Triple(stat.totalBytes, stat.availableBytes, stat.totalBytes - stat.availableBytes)
+                }
         } catch (e: Exception) {
             null
         }
@@ -2244,25 +2248,25 @@ fun StorageStatsSection(context: Context) {
     }
 
     Spacer(modifier = Modifier.height(20.dp))
-    SectionHeader(Icons.Filled.Memory, "זיכרון (RAM)")
+    SectionHeader(Icons.Filled.SdCard, "כרטיס זיכרון חיצוני")
     Spacer(modifier = Modifier.height(8.dp))
 
-    if (memStats != null) {
-        val (memTotal, memAvailable, memUsed) = memStats
-        val memUsedFraction = if (memTotal > 0) (memUsed.toFloat() / memTotal.toFloat()).coerceIn(0f, 1f) else 0f
+    if (sdStats != null) {
+        val (sdTotal, sdAvailable, sdUsed) = sdStats
+        val sdUsedFraction = if (sdTotal > 0) (sdUsed.toFloat() / sdTotal.toFloat()).coerceIn(0f, 1f) else 0f
 
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             StorageStatCard(
-                icon = Icons.Filled.Memory,
-                label = "בשימוש",
-                value = formatBytes(memUsed),
-                tint = if (memUsedFraction > 0.9f) ErrorColor else Primary,
+                icon = Icons.Filled.SdCard,
+                label = "תפוס",
+                value = formatBytes(sdUsed),
+                tint = if (sdUsedFraction > 0.9f) ErrorColor else Primary,
                 modifier = Modifier.weight(1f)
             )
             StorageStatCard(
-                icon = Icons.Filled.Memory,
+                icon = Icons.Filled.FolderOpen,
                 label = "פנוי",
-                value = formatBytes(memAvailable),
+                value = formatBytes(sdAvailable),
                 tint = colors.mutedText,
                 modifier = Modifier.weight(1f)
             )
@@ -2272,10 +2276,10 @@ fun StorageStatsSection(context: Context) {
             Column(modifier = Modifier.padding(14.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
-                        "סה\"כ ${formatBytes(memTotal)}",
+                        "סה\"כ ${formatBytes(sdTotal)}",
                         fontSize = 12.sp, color = colors.mutedText, modifier = Modifier.weight(1f)
                     )
-                    Text("${(memUsedFraction * 100).toInt()}% בשימוש", fontSize = 11.sp, color = colors.mutedText)
+                    Text("${(sdUsedFraction * 100).toInt()}% בשימוש", fontSize = 11.sp, color = colors.mutedText)
                 }
                 Spacer(modifier = Modifier.height(8.dp))
                 Box(
@@ -2284,16 +2288,16 @@ fun StorageStatsSection(context: Context) {
                     Box(
                         modifier = Modifier
                             .fillMaxHeight()
-                            .fillMaxWidth(memUsedFraction)
+                            .fillMaxWidth(sdUsedFraction)
                             .clip(RoundedCornerShape(50))
-                            .background(if (memUsedFraction > 0.9f) ErrorColor else Primary)
+                            .background(if (sdUsedFraction > 0.9f) ErrorColor else Primary)
                     )
                 }
             }
         }
     } else {
         Surface(shape = RoundedCornerShape(16.dp), color = colors.cardBg, shadowElevation = 1.dp, modifier = Modifier.fillMaxWidth()) {
-            Text("לא ניתן לקרוא נתוני זיכרון", fontSize = 12.sp, color = colors.mutedText, modifier = Modifier.padding(14.dp))
+            Text("לא זוהה כרטיס זיכרון חיצוני במכשיר", fontSize = 12.sp, color = colors.mutedText, modifier = Modifier.padding(14.dp))
         }
     }
 }
