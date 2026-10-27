@@ -95,6 +95,7 @@ import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.text.SimpleDateFormat
+import java.util.Calendar
 import java.util.Date
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicInteger
@@ -909,13 +910,32 @@ fun BatchRenameScreen(initialModeExtra: MutableState<String?>, themeModeState: M
                     )
                 }
 
+                // נתיב יעד מלא להצגה בהיסטוריה ("א / אמן / סינגלים") - עולים במעלה
+                // עץ התיקיות עד תיקיית האב שנבחרה (או לכל היותר 3 רמות).
+                // מחושב פעם אחת לכל תיקיית יעד (ב-IO) - לא לכל קובץ - כי כל שאילתת SAF איטית.
+                val destPaths: Map<Uri, String> = withContext(Dispatchers.IO) {
+                    val rootName = DocumentFile.fromTreeUri(context, root)?.name
+                    result.moveRecords.map { it.destinationDir }.distinctBy { it.uri }.associate { dir ->
+                        val names = mutableListOf<String>()
+                        var cur: DocumentFile? = dir
+                        while (cur != null && names.size < 3) {
+                            val n = cur.name ?: break
+                            if (n == rootName) break
+                            names.add(n)
+                            cur = cur.parentFile
+                        }
+                        dir.uri to names.reversed().joinToString(" / ").ifBlank { dir.name ?: "?" }
+                    }
+                }
+                fun destPathOf(dir: DocumentFile): String = destPaths[dir.uri] ?: (dir.name ?: "?")
+
                 AppPrefs.addHistoryEntry(
                     context,
                     HistoryEntry(
                         "sort", result.successCount, result.failures.size, System.currentTimeMillis(),
                         details = result.moveRecords.map { r ->
                             HistoryDetail(
-                                "move", r.fileName, "${r.destinationDir.name ?: "?"} / ${r.fileName}",
+                                "move", r.fileName, destPathOf(r.destinationDir),
                                 destDirUri = r.destinationDir.uri.toString(),
                                 originalParentUri = r.originalParent?.uri?.toString(),
                                 originalName = r.originalName,
@@ -2616,10 +2636,23 @@ fun HistoryRow(
                 Spacer(modifier = Modifier.width(10.dp))
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        if (entry.type == "rename") "שינוי שמות - ${entry.count} קבצים" else "מיון סינגלים - ${entry.count} שירים",
+                        if (entry.type == "rename") "שונו שמות של ${entry.count} קבצים" else "${entry.count} שירים הועברו לתיקיות אמנים",
                         fontSize = 13.sp, fontWeight = FontWeight.Bold
                     )
-                    Text(dateFormat.format(Date(entry.timestamp)), fontSize = 11.sp, color = colors.mutedText)
+                    Text(friendlyHistoryDate(entry.timestamp, dateFormat), fontSize = 11.sp, color = colors.mutedText)
+                    // שורת תקציר - מה בפועל בוצע, גם כשהרשומה סגורה: הדוגמה הראשונה
+                    // + כמה נוספים, כדי שלא יהיה צורך לפתוח כל רשומה כדי להבין אותה.
+                    val first = entry.details.firstOrNull()
+                    if (!expanded && first != null) {
+                        val more = entry.details.size - 1
+                        val preview = if (first.kind == "move") "${first.displayFrom}  ←  ${historyDestPath(first)}"
+                        else "${first.displayFrom}  ←  ${first.displayTo}"
+                        Text(
+                            preview + if (more > 0) "  (+$more)" else "",
+                            fontSize = 11.sp, color = colors.mutedText.copy(alpha = 0.85f),
+                            maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 2.dp)
+                        )
+                    }
                 }
                 if (entry.failedCount > 0) {
                     Surface(shape = RoundedCornerShape(50), color = colors.warnChip) {
@@ -2723,26 +2756,52 @@ fun HistoryRow(
 // שקשה להבחין בו איפה נגמר השם הישן ואיפה מתחיל החדש.
 @Composable
 private fun HistoryDetailLine(d: HistoryDetail, colors: AppColors, modifier: Modifier = Modifier) {
-    Row(modifier = modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-        Surface(shape = RoundedCornerShape(6.dp), color = colors.bg, modifier = Modifier.weight(1f)) {
+    // שתי שורות מוערמות (ולא שני צ'יפים זה לצד זה שחותכים את השם): למעלה "מה
+    // היה", למטה "מה נהיה" - כל אחת עם תווית מפורשת, ועד 2 שורות לשם ארוך.
+    val isMove = d.kind == "move"
+    Column(modifier = modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+        Row(verticalAlignment = Alignment.Top) {
             Text(
-                d.displayFrom, fontSize = 11.sp, color = colors.mutedText,
-                maxLines = 1, overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp)
+                if (isMove) "קובץ" else "לפני", fontSize = 10.sp, fontWeight = FontWeight.Bold,
+                color = colors.mutedText, modifier = Modifier.width(34.dp).padding(top = 1.dp)
+            )
+            Text(
+                d.displayFrom, fontSize = 12.sp, color = colors.mutedText,
+                maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f)
             )
         }
-        Icon(
-            Icons.Filled.ArrowBack, contentDescription = null, tint = colors.mutedText,
-            modifier = Modifier.size(13.dp).padding(horizontal = 4.dp)
-        )
-        Surface(shape = RoundedCornerShape(6.dp), color = colors.newChip, modifier = Modifier.weight(1f)) {
+        Row(verticalAlignment = Alignment.Top) {
             Text(
-                d.displayTo, fontSize = 11.sp, color = Primary, fontWeight = FontWeight.Medium,
-                maxLines = 1, overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp)
+                if (isMove) "אל" else "אחרי", fontSize = 10.sp, fontWeight = FontWeight.Bold,
+                color = Primary, modifier = Modifier.width(34.dp).padding(top = 1.dp)
+            )
+            Text(
+                if (isMove) historyDestPath(d) else d.displayTo,
+                fontSize = 12.sp, color = Primary, fontWeight = FontWeight.Medium,
+                maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f)
             )
         }
     }
+}
+
+// נתיב היעד להצגה של פרט מיון. רשומות חדשות שומרות ב-displayTo רק את הנתיב
+// ("א / אמן / סינגלים"); רשומות ישנות שמרו "תיקייה / שם קובץ" - מסירים את שם
+// הקובץ מהסוף כדי שלא יוצג פעמיים.
+private fun historyDestPath(d: HistoryDetail): String {
+    val file = d.fileName ?: d.displayFrom
+    return d.displayTo.removeSuffix(" / $file").ifBlank { d.displayTo }
+}
+
+// תאריך ידידותי: "היום 14:30" / "אתמול 09:12", ואחרת התאריך המלא.
+private fun friendlyHistoryDate(timestamp: Long, fullFormat: SimpleDateFormat): String {
+    val cal = Calendar.getInstance().apply { timeInMillis = timestamp }
+    val today = Calendar.getInstance()
+    val time = SimpleDateFormat("HH:mm", Locale("he")).format(Date(timestamp))
+    fun sameDay(a: Calendar, b: Calendar) = a.get(Calendar.YEAR) == b.get(Calendar.YEAR) && a.get(Calendar.DAY_OF_YEAR) == b.get(Calendar.DAY_OF_YEAR)
+    if (sameDay(cal, today)) return "היום $time"
+    today.add(Calendar.DAY_OF_YEAR, -1)
+    if (sameDay(cal, today)) return "אתמול $time"
+    return fullFormat.format(Date(timestamp))
 }
 
 // ==================== לוגיקת שינוי שמות ====================
